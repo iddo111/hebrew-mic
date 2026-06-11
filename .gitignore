@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.log
+*.err
+*.out
+*.wav
+*.db
+*.bak
+*.corrupt
+dictation.json
+_run.*
+.almaware/

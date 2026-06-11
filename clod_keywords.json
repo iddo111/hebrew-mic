@@ -1,0 +1,32 @@
+{
+  "_notes": "רשימת מילות-המפתח של הווידגט. mode: 'wakeword' = מצב חמוש אחרי מילת-הפעלה; 'always' = מקליד הכל. dictate_timeout_sec: 0 = חמוש לתמיד עד משפט עצירה. כל keyword: phrase=המילה, action=dictate|assistant|council, enabled=on/off. הווידגט טוען מחדש בהפעלה.",
+  "mode": "wakeword",
+  "dictate_timeout_sec": 0,
+  "dictate_to_claude": true,
+  "claude_window_patterns": ["Claude"],
+  "language": "he",
+  "whisper_device": "cuda",
+  "whisper_model": "ivrit-ai/whisper-large-v3-turbo-ct2",
+  "audio_clean": false,
+  "haiku_brainz": true,
+  "stop_phrases": ["קלוד סגור מיקרופון", "שירי סגרי מיקרופון", "קלוד סגור את המיקרופון", "שירי סגרי את המיקרופון", "קלוד תסגור מיקרופון", "שירי תסגרי מיקרופון"],
+  "submit_phrases": ["קלוד שלח", "שירי שלחי", "שלח עכשיו", "שלח הודעה", "send it", "send now", "press enter"],
+  "_wake_note": "auto-language transcribes spoken 'Claude'/'Shiri'/'Grok' in LATIN — so we list Hebrew AND Latin spellings + common Whisper mishears. All three ARM dictation.",
+  "keywords": [
+    {"phrase": "קלוד", "action": "dictate", "enabled": true},
+    {"phrase": "claude", "action": "dictate", "enabled": true},
+    {"phrase": "cloud", "action": "dictate", "enabled": true},
+    {"phrase": "clod", "action": "dictate", "enabled": true},
+    {"phrase": "היי קלוד", "action": "dictate", "enabled": true},
+    {"phrase": "hey claude", "action": "dictate", "enabled": true},
+    {"phrase": "שירי", "action": "dictate", "enabled": true},
+    {"phrase": "shiri", "action": "dictate", "enabled": true},
+    {"phrase": "shiree", "action": "dictate", "enabled": true},
+    {"phrase": "sheree", "action": "dictate", "enabled": true},
+    {"phrase": "גרוק", "action": "dictate", "enabled": true},
+    {"phrase": "grok", "action": "dictate", "enabled": true},
+    {"phrase": "כבה נורות ה-RAM", "action": "assistant", "enabled": true},
+    {"phrase": "kill ram lights", "action": "assistant", "enabled": true},
+    {"phrase": "kill the ramstick led lights", "action": "assistant", "enabled": true}
+  ]
+}

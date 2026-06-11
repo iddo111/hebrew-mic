@@ -1,0 +1,29 @@
+# Hebrew Mic — runtime dependencies
+# Python 3.10+ recommended. On Windows install a CUDA-enabled torch for GPU Whisper.
+
+# Speech-to-text (CTranslate2 Whisper)
+faster-whisper>=1.0.0
+
+# Audio capture + DSP
+sounddevice>=0.4.6
+numpy>=1.24
+scipy>=1.10
+soundfile>=0.12        # clod_mic_server: decode uploaded audio
+librosa>=0.10          # optional audio decode fallback
+
+# Keyboard hotkeys + Windows keystroke injection helpers
+keyboard>=0.13.5
+psutil>=5.9            # typer.py: identify foreground process
+comtypes>=1.2 ; platform_system == "Windows"   # UIAutomation paste path (Windows)
+
+# PWA / phone companion server
+Flask>=3.0
+
+# Tray icon + widget (optional GUI)
+pystray>=0.19
+Pillow>=10.0
+
+# torch is required by faster-whisper's GPU path. Install the build that matches
+# your CUDA (see https://pytorch.org). CPU-only also works (set whisper_device=cpu):
+#   pip install torch
+torch

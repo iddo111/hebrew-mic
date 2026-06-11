@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a0a2e">
+<title>קלוד מיק | Clod Mic</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: linear-gradient(135deg, #1a0a2e 0%, #0d1b4b 50%, #0a2a1a 100%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .title {
+    font-size: 2rem;
+    font-weight: 900;
+    letter-spacing: 2px;
+    text-align: center;
+    margin-bottom: 6px;
+    background: linear-gradient(90deg, #00e5ff, #ff4dff, #ffea00);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .subtitle {
+    font-size: 0.95rem;
+    opacity: 0.65;
+    margin-bottom: 32px;
+    text-align: center;
+  }
+
+  /* Outer glow ring */
+  .mic-ring {
+    width: 220px;
+    height: 220px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+    position: relative;
+  }
+  .mic-ring.idle {
+    background: radial-gradient(circle, rgba(0,229,255,0.15) 0%, rgba(0,229,255,0.04) 70%);
+    box-shadow: 0 0 30px rgba(0,229,255,0.2), 0 0 60px rgba(0,229,255,0.1);
+  }
+  .mic-ring.listening {
+    background: radial-gradient(circle, rgba(255,77,255,0.3) 0%, rgba(255,77,255,0.05) 70%);
+    box-shadow: 0 0 40px rgba(255,77,255,0.5), 0 0 80px rgba(255,77,255,0.2);
+    animation: pulseRing 1.4s ease-in-out infinite;
+  }
+  .mic-ring.sending {
+    background: radial-gradient(circle, rgba(255,234,0,0.3) 0%, rgba(255,234,0,0.05) 70%);
+    box-shadow: 0 0 40px rgba(255,234,0,0.6), 0 0 80px rgba(255,234,0,0.2);
+  }
+
+  @keyframes pulseRing {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.06); }
+  }
+
+  /* Big mic button */
+  #micBtn {
+    width: 170px;
+    height: 170px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 72px;
+    transition: all 0.2s ease;
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+    z-index: 2;
+  }
+  #micBtn.idle {
+    background: linear-gradient(145deg, #1e3a5f, #0d1b40);
+    box-shadow: 8px 8px 20px rgba(0,0,0,0.6), -4px -4px 12px rgba(0,229,255,0.15);
+  }
+  #micBtn.listening {
+    background: linear-gradient(145deg, #6a0080, #b800b8);
+    box-shadow: 0 0 25px rgba(255,77,255,0.8), 8px 8px 20px rgba(0,0,0,0.5);
+  }
+  #micBtn.sending {
+    background: linear-gradient(145deg, #7a6000, #c8a000);
+    box-shadow: 0 0 25px rgba(255,234,0,0.8);
+  }
+  #micBtn:active { transform: scale(0.94); }
+
+  /* Status area */
+  .status-area {
+    margin-top: 28px;
+    text-align: center;
+    max-width: 340px;
+    width: 90vw;
+    min-height: 90px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #statusLine {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    transition: color 0.3s;
+  }
+  .status-idle { color: #00e5ff; }
+  .status-listening { color: #ff77ff; }
+  .status-sending { color: #ffea00; }
+  .status-ok { color: #00ff88; }
+  .status-error { color: #ff4444; }
+
+  #transcript {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    opacity: 0.9;
+    background: rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 10px 16px;
+    min-height: 42px;
+    width: 100%;
+    word-break: break-word;
+    white-space: pre-wrap;
+    direction: auto;
+  }
+
+  #feedback {
+    font-size: 0.85rem;
+    opacity: 0.8;
+    border-radius: 8px;
+    padding: 6px 14px;
+    max-width: 100%;
+    word-break: break-word;
+    transition: all 0.3s;
+  }
+  .fb-sent { background: rgba(0,255,136,0.15); color: #00ff88; }
+  .fb-typed { background: rgba(0,229,255,0.12); color: #00e5ff; }
+  .fb-err { background: rgba(255,68,68,0.15); color: #ff6666; }
+
+  /* Footer controls */
+  .footer {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+  .lang-row {
+    display: flex;
+    gap: 10px;
+  }
+  .lang-btn {
+    padding: 8px 20px;
+    border-radius: 20px;
+    border: 2px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.07);
+    color: #fff;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .lang-btn.active {
+    background: rgba(0,229,255,0.25);
+    border-color: #00e5ff;
+    color: #00e5ff;
+    font-weight: 700;
+  }
+
+  .server-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 0.78rem;
+    opacity: 0.55;
+  }
+  #serverIp {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #fff;
+    font-size: 0.78rem;
+    width: 180px;
+    outline: none;
+    text-align: center;
+    direction: ltr;
+  }
+
+  /* Waveform visualizer */
+  #waveCanvas {
+    margin-top: 10px;
+    border-radius: 8px;
+    opacity: 0.7;
+    width: 280px;
+    height: 48px;
+  }
+</style>
+</head>
+<body>
+
+<div class="title">🎙️ קלוד מיק</div>
+<div class="subtitle">Clod Mic — Hebrew / English voice assistant</div>
+
+<div class="mic-ring idle" id="micRing">
+  <button id="micBtn" class="idle" onclick="toggleListen()">🎙️</button>
+</div>
+
+<canvas id="waveCanvas" width="280" height="48"></canvas>
+
+<div class="status-area">
+  <div id="statusLine" class="status-idle">לחץ להאזנה • Tap to listen</div>
+  <div id="transcript"></div>
+  <div id="feedback"></div>
+</div>
+
+<div class="footer">
+  <div class="lang-row">
+    <button class="lang-btn active" id="btnHe" onclick="setLang('he-IL')">עברית</button>
+    <button class="lang-btn" id="btnEn" onclick="setLang('en-US')">English</button>
+  </div>
+  <div class="server-row">
+    <span>PC:</span>
+    <input id="serverIp" type="text" placeholder="http://192.168.1.70:7789" autocomplete="off" spellcheck="false">
+  </div>
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+// Default to the SAME origin the page was loaded from — so over HTTPS (Tailscale Serve)
+// the mic permission is granted AND /dispatch fetches stay same-origin. Editable below.
+const DEFAULT_SERVER = (location.protocol === "https:" || location.protocol === "http:")
+  // Fallback only if the page is opened from a file:// URL. Set this to your PC's
+  // LAN/Tailscale IP (the host running clod_mic_server.py on port 7789), e.g.
+  // "http://192.168.1.50:7789". Best practice: serve android_mic.html from the
+  // server itself so this stays same-origin and you never hardcode an IP.
+  ? location.origin : "http://localhost:7789";
+const TRIGGER_HE = /^קלוד[,\s]*/i;
+const TRIGGER_EN = /^claude[,\s]*/i;
+
+let recognition = null;
+let isListening = false;
+let currentLang = "he-IL";
+let audioCtx = null, analyser = null, micStream = null, animFrame = null;
+
+// Restore saved server
+const savedServer = localStorage.getItem("clodMicServer");
+document.getElementById("serverIp").value = savedServer || DEFAULT_SERVER;
+document.getElementById("serverIp").addEventListener("change", () => {
+  localStorage.setItem("clodMicServer", document.getElementById("serverIp").value.trim());
+});
+
+function getServer() {
+  return (document.getElementById("serverIp").value.trim() || DEFAULT_SERVER).replace(/\/$/, "");
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function setUI(state, statusText, cls) {
+  document.getElementById("micBtn").className = state;
+  document.getElementById("micRing").className = "mic-ring " + state;
+  const sl = document.getElementById("statusLine");
+  sl.textContent = statusText;
+  sl.className = "status-" + cls;
+}
+
+function showFeedback(msg, type) {
+  const el = document.getElementById("feedback");
+  el.textContent = msg;
+  el.className = "fb-" + type;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.textContent = ""; el.className = ""; }, 6000);
+}
+
+function setTranscript(t) {
+  document.getElementById("transcript").textContent = t;
+}
+
+// ── Language toggle ───────────────────────────────────────────────────────────
+function setLang(lang) {
+  currentLang = lang;
+  document.getElementById("btnHe").classList.toggle("active", lang === "he-IL");
+  document.getElementById("btnEn").classList.toggle("active", lang === "en-US");
+  if (recognition) {
+    recognition.lang = lang;
+  }
+  localStorage.setItem("clodMicLang", lang);
+}
+
+// Restore lang
+const sl = localStorage.getItem("clodMicLang");
+if (sl) setLang(sl);
+
+// ── Waveform visualizer ───────────────────────────────────────────────────────
+function startVisualizer(stream) {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 64;
+  const src = audioCtx.createMediaStreamSource(stream);
+  src.connect(analyser);
+  const buf = new Uint8Array(analyser.frequencyBinCount);
+  const canvas = document.getElementById("waveCanvas");
+  const ctx = canvas.getContext("2d");
+
+  function draw() {
+    animFrame = requestAnimationFrame(draw);
+    analyser.getByteFrequencyData(buf);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const barW = canvas.width / buf.length * 1.5;
+    ctx.fillStyle = "#ff77ff";
+    for (let i = 0; i < buf.length; i++) {
+      const h = (buf[i] / 255) * canvas.height;
+      ctx.fillRect(i * (canvas.width / buf.length), canvas.height - h, barW, h);
+    }
+  }
+  draw();
+}
+
+function stopVisualizer() {
+  if (animFrame) cancelAnimationFrame(animFrame);
+  if (audioCtx) audioCtx.close();
+  audioCtx = null; analyser = null;
+  const canvas = document.getElementById("waveCanvas");
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// ── Speech recognition ────────────────────────────────────────────────────────
+function buildRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = false;
+  r.interimResults = true;
+  r.lang = currentLang;
+  r.maxAlternatives = 1;
+
+  r.onstart = () => {
+    setUI("listening", "🔴 מאזין... • Listening...", "listening");
+  };
+
+  r.onresult = (e) => {
+    let interim = "", final_ = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final_ += t; else interim += t;
+    }
+    setTranscript(final_ || interim);
+    if (final_) handleFinal(final_.trim());
+  };
+
+  r.onerror = (e) => {
+    const msg = e.error === "not-allowed"
+      ? "❌ מיקרופון חסום • Mic blocked"
+      : "❌ שגיאה: " + e.error;
+    setUI("idle", msg, "error");
+    showFeedback(msg, "err");
+    isListening = false;
+    stopVisualizer();
+    if (e.error !== "not-allowed" && e.error !== "aborted") restartAfterDelay(800);
+  };
+
+  r.onend = () => {
+    if (isListening) {
+      setTimeout(() => { if (isListening && recognition) { try { recognition.start(); } catch(x){} } }, 300);
+    } else {
+      setUI("idle", "לחץ להאזנה • Tap to listen", "idle");
+      stopVisualizer();
+    }
+  };
+
+  return r;
+}
+
+function restartAfterDelay(ms) {
+  setTimeout(() => {
+    if (isListening && recognition) {
+      try { recognition.start(); } catch(x) {}
+    }
+  }, ms);
+}
+
+// ── Main toggle ───────────────────────────────────────────────────────────────
+async function toggleListen() {
+  if (!("SpeechRecognition" in window || "webkitSpeechRecognition" in window)) {
+    alert("❌ Web Speech API not available.\nUse Chrome on Android.");
+    return;
+  }
+
+  if (isListening) {
+    // Stop
+    isListening = false;
+    if (recognition) { try { recognition.stop(); } catch(x) {} }
+    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    stopVisualizer();
+    setUI("idle", "לחץ להאזנה • Tap to listen", "idle");
+    setTranscript("");
+    return;
+  }
+
+  // Start — request mic permission + start visualizer
+  isListening = true;
+  setUI("listening", "⏳ מבקש מיקרופון...", "listening");
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    startVisualizer(micStream);
+  } catch(e) {
+    setUI("idle", "❌ אין גישה למיקרופון", "error");
+    showFeedback("Mic permission denied", "err");
+    isListening = false;
+    return;
+  }
+
+  recognition = buildRecognition();
+  recognition.lang = currentLang;
+  try {
+    recognition.start();
+  } catch(e) {
+    setUI("idle", "❌ " + e.message, "error");
+    isListening = false;
+  }
+}
+
+// ── Handle final transcript ───────────────────────────────────────────────────
+async function handleFinal(text) {
+  if (!text) return;
+
+  const isClaudeTriggerHe = TRIGGER_HE.test(text);
+  const isClaudeTriggerEn = TRIGGER_EN.test(text);
+
+  if (isClaudeTriggerHe || isClaudeTriggerEn) {
+    // Strip trigger word and dispatch to PC
+    const payload = text.replace(TRIGGER_HE, "").replace(TRIGGER_EN, "").trim();
+    if (!payload) {
+      showFeedback("⚠️ אין טקסט אחרי הטריגר", "err");
+      return;
+    }
+
+    setUI("sending", "⚡ שולח לקלוד... • Sending to Claude...", "sending");
+    showFeedback("📡 שולח: " + payload, "sent");
+
+    const server = getServer();
+    try {
+      const resp = await fetch(server + "/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: payload }),
+      });
+      const json = await resp.json();
+      if (json.ok) {
+        showFeedback("✅ נשלח לקלוד: " + payload, "sent");
+        setUI("listening", "🔴 מאזין... • Listening...", "listening");
+      } else {
+        throw new Error(json.error || "unknown");
+      }
+    } catch(e) {
+      showFeedback("❌ שגיאת שליחה: " + e.message, "err");
+      setUI("listening", "🔴 מאזין... (שגיאה)", "listening");
+    }
+    setTranscript("");
+  } else {
+    // Regular dictation — inject via clipboard/typing hint
+    showFeedback("⌨️ הוקלד: " + text, "typed");
+    // On Android Chrome there's no way to inject text into other apps from a PWA,
+    // but we can copy it to clipboard so user can paste
+    try {
+      await navigator.clipboard.writeText(text);
+      showFeedback("📋 הועתק: " + text, "typed");
+    } catch(e) {
+      showFeedback("⌨️ " + text, "typed");
+    }
+  }
+}
+
+// ── Prevent screen sleep (wake lock) ─────────────────────────────────────────
+let wakeLock = null;
+async function requestWakeLock() {
+  if ("wakeLock" in navigator) {
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+    } catch(e) {}
+  }
+}
+requestWakeLock();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
+</script>
+
+</body>
+</html>
