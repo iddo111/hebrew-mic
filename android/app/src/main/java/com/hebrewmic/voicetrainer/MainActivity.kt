@@ -75,6 +75,14 @@ class MainActivity : AppCompatActivity() {
         liveButton.setOnClickListener { toggleLive() }
         resetButton.setOnClickListener { resetAll() }
 
+        findViewById<Button>(R.id.enableImeButton).setOnClickListener {
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }
+        findViewById<Button>(R.id.pickImeButton).setOnClickListener {
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .showInputMethodPicker()
+        }
+
         if (!hasMicPermission()) {
             ActivityCompat.requestPermissions(
                 this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST

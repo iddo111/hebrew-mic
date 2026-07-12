@@ -32,4 +32,23 @@
 
     <string name="toast_need_more_data">צריך לפחות כמה הקלטות מכל סוג לפני אימון (גם מהקול שלך וגם רעש/אחר)</string>
     <string name="toast_train_first">קודם צריך לאמן את הרשת</string>
+
+    <!-- מקלדת קולית -->
+    <string name="ime_name">מקלדת קולית עברית</string>
+    <string name="ime_subtype_label">הכתבה קולית בעברית</string>
+    <string name="ime_section_title">⌨️ מקלדת קולית — הכתבה לכל אפליקציה</string>
+    <string name="ime_section_hint">הפעל את המקלדת בהגדרות, ואז בחר אותה בכל שדה טקסט — הדיבור שלך יוקלד אוטומטית בעברית</string>
+    <string name="button_enable_ime">1️⃣ הפעל את המקלדת בהגדרות</string>
+    <string name="button_pick_ime">2️⃣ בחר את המקלדת הקולית</string>
+    <string name="ime_idle">לחץ על המיקרופון כדי להכתיב</string>
+    <string name="ime_listening">🎧 מאזין… דבר בעברית</string>
+    <string name="ime_hearing">🔴 שומע אותך…</string>
+    <string name="ime_no_permission">אין הרשאת מיקרופון — לחץ כאן כדי לפתוח את האפליקציה ולאשר</string>
+    <string name="ime_no_recognizer">זיהוי דיבור לא זמין במכשיר הזה</string>
+    <string name="ime_mic_start">🎤 התחל הכתבה</string>
+    <string name="ime_mic_stop">⏸ השהה הכתבה</string>
+    <string name="ime_switch">⌨️</string>
+    <string name="ime_space">רווח</string>
+    <string name="ime_delete">⌫</string>
+    <string name="ime_enter">⏎</string>
 </resources>
