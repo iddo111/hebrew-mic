@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">מאמן קול</string>
+    <string name="app_title">מאמן קול 🎤</string>
+    <string name="app_subtitle">רשת נוירונים שלומדת לזהות את הקול שלך — כל האימון על המכשיר</string>
+
+    <string name="status_idle">הקלט דוגמאות של הקול שלך ושל רעש/קולות אחרים, ואז לחץ על אימון</string>
+    <string name="status_recording_me">🔴 מקליט את הקול שלך… דבר עכשיו (3 שניות)</string>
+    <string name="status_recording_other">🔴 מקליט רעש/קול אחר… (3 שניות)</string>
+    <string name="status_record_failed">ההקלטה נכשלה — בדוק הרשאת מיקרופון</string>
+    <string name="status_too_quiet">ההקלטה שקטה מדי — נסה שוב ודבר קרוב למיקרופון</string>
+    <string name="status_clip_saved">✅ הדוגמה נשמרה</string>
+    <string name="status_training">מאמן את הרשת…</string>
+    <string name="status_training_progress">אימון: אפוק %1$d/%2$d — loss‏ %3$.4f</string>
+    <string name="status_training_done">✅ האימון הסתיים — דיוק על סט האימון: %1$.1f%%</string>
+    <string name="status_listening">🎧 מאזין…</string>
+    <string name="status_reset_done">כל הנתונים והמודל נמחקו</string>
+
+    <string name="counts_format">הקול שלי: %1$d הקלטות (%2$d פריימים) · רעש/אחר: %3$d הקלטות (%4$d פריימים)</string>
+
+    <string name="button_record_me">🎤 הקלט את הקול שלי (3 שניות)</string>
+    <string name="button_record_other">🔊 הקלט רעש / קול אחר (3 שניות)</string>
+    <string name="button_train">🧠 אמן את הרשת</string>
+    <string name="button_live_start">▶️ זיהוי חי</string>
+    <string name="button_live_stop">⏹ עצור זיהוי</string>
+    <string name="button_reset">🗑 מחק הכול והתחל מחדש</string>
+
+    <string name="probability_idle">—</string>
+    <string name="probability_silence">שקט…</string>
+    <string name="probability_me">זה אתה! (%1$d%%)</string>
+    <string name="probability_other">לא הקול שלך (%1$d%%)</string>
+
+    <string name="toast_need_more_data">צריך לפחות כמה הקלטות מכל סוג לפני אימון (גם מהקול שלך וגם רעש/אחר)</string>
+    <string name="toast_train_first">קודם צריך לאמן את הרשת</string>
+</resources>
