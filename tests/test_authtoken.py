@@ -64,3 +64,17 @@ def test_extract_reads_custom_header_and_query():
 
 def test_extract_returns_empty_when_absent():
     assert authtoken.extract(_Headers(), {}) == ""
+
+
+def test_check_survives_a_non_ascii_token(monkeypatch, tmp_path):
+    """hmac.compare_digest raises TypeError on non-ASCII str — a bad token must come
+    back False, not blow up inside the request handler."""
+    _reset(monkeypatch, tmp_path, token="abc123")
+    for bad in ("שלום", "é", "🔑", "\udcff"):
+        assert authtoken.check(bad) is False, repr(bad)
+
+
+def test_check_handles_a_non_ascii_real_token(monkeypatch, tmp_path):
+    _reset(monkeypatch, tmp_path, token="סוד־עברי")
+    assert authtoken.check("סוד־עברי")
+    assert not authtoken.check("סוד")

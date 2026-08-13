@@ -72,5 +72,15 @@ def extract(headers, args) -> str:
 
 
 def check(presented: str) -> bool:
-    """Constant-time comparison against the shared token."""
-    return bool(presented) and hmac.compare_digest(presented, get_token())
+    """Constant-time comparison against the shared token.
+
+    Compares bytes: hmac.compare_digest raises TypeError on non-ASCII str inputs, and a
+    rejected token must return False, never blow up inside the request handler."""
+    if not presented:
+        return False
+    try:
+        a = str(presented).encode("utf-8", "surrogatepass")
+        b = get_token().encode("utf-8", "surrogatepass")
+    except Exception:
+        return False
+    return hmac.compare_digest(a, b)

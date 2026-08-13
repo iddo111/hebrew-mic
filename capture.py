@@ -138,22 +138,26 @@ class MicCapture:
     # ── public API ────────────────────────────────────────────────────────────
     def start(self):
         self._stop_evt.clear()
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True,
-                                        name="dictation-utterance")
+        # A FRESH queue per generation. Reusing it across stop()/start() (which is what
+        # switch_device does) let a leftover item from the previous generation reach the
+        # new worker; the worker exits on _stop_evt without draining, so anything left
+        # behind would poison the restart and silently wedge dictation for good.
+        self._work = queue.Queue(maxsize=32)
+        self._worker = threading.Thread(target=self._worker_loop, args=(self._work,),
+                                        daemon=True, name="dictation-utterance")
         self._worker.start()
         self._thread = threading.Thread(target=self._run, daemon=True, name="dictation-capture")
         self._thread.start()
 
     def stop(self):
+        # No wake-up sentinel: _worker_loop polls with a 0.5s timeout, so it notices the
+        # stop event on its own. A sentinel would have to be consumed to be harmless, and
+        # a worker busy inside Whisper exits without consuming anything.
         self._stop_evt.set()
-        try:
-            self._work.put_nowait(None)   # wake the worker so it can exit
-        except queue.Full:
-            pass
         if self._thread:
             self._thread.join(timeout=3)
         if self._worker:
-            self._worker.join(timeout=3)
+            self._worker.join(timeout=2)   # > the 0.5s queue poll interval
 
     def flush(self):
         """Close the in-flight utterance NOW instead of waiting out `silence_ms`.
@@ -278,17 +282,28 @@ class MicCapture:
                 log.error(f"Audio stream error: {e} — reconnecting in {backoff}s")
                 self._stop_evt.wait(backoff)
 
+    def _read_gate(self) -> bool:
+        """Sample the arm gate. If we can't tell whether we're armed, we are not."""
+        try:
+            return bool(self._gate())
+        except Exception:
+            return False
+
     def _process_block(self, block: np.ndarray):
         rms = float(np.sqrt(np.mean(block ** 2)))
         with self._buf_lock:
             if rms >= self._energy_thresh:
                 if not self._in_speech:
                     # Speech onset — this is the only correct moment to read the gate.
-                    try:
-                        self._armed_at_onset = bool(self._gate())
-                    except Exception:
-                        self._armed_at_onset = False
+                    self._armed_at_onset = self._read_gate()
                     self._in_speech = True
+                elif not self._armed_at_onset and self._read_gate():
+                    # The gate came up mid-segment: the speaker cleared their throat or
+                    # a door slammed, THEN pressed PTT and spoke. Drop the unarmed
+                    # prefix and keep the phrase, instead of discarding the whole thing.
+                    self._frames.clear()
+                    self._silent_count = 0
+                    self._armed_at_onset = True
                 self._frames.append(block.copy())
                 self._silent_count = 0
                 return
@@ -309,27 +324,32 @@ class MicCapture:
                 return
             audio = np.concatenate(self._frames)
             armed = self._armed_at_onset
+            # How much of the buffer was actually speech. The buffer always ends with
+            # silence_ms of trailing silence, so len(audio) alone says nothing about
+            # whether the speaker said a real word — stt.py needs the speech portion to
+            # decide whether a one-word transcript is an answer or a silence artifact.
+            speech_samples = max(0, len(audio) - self._silent_count)
             self._frames.clear()
             self._in_speech = False
             self._silent_count = 0
         try:
-            self._work.put_nowait((audio, self._sr, armed))
+            self._work.put_nowait((audio, self._sr, armed, speech_samples))
         except queue.Full:
             logging.getLogger("dictation.capture").warning(
                 "utterance queue full — dropping %.1fs of audio", len(audio) / self._sr)
 
-    def _worker_loop(self):
-        """Single consumer: keeps transcription+typing in capture order."""
+    def _worker_loop(self, work: "queue.Queue"):
+        """Single consumer: keeps transcription+typing in capture order.
+
+        Takes its queue as an argument so it can only ever drain the generation it was
+        started with, even if start() has since installed a new one."""
         log = logging.getLogger("dictation.capture")
         while not self._stop_evt.is_set():
             try:
-                item = self._work.get(timeout=0.5)
+                audio, sr, armed, speech_samples = work.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if item is None:
-                break
-            audio, sr, armed = item
             try:
-                self._on_utterance(audio, sr, armed)
+                self._on_utterance(audio, sr, armed, speech_samples)
             except Exception as e:
                 log.error(f"utterance handler failed: {e}")

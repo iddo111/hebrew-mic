@@ -44,6 +44,9 @@ DEFAULTS = {
     # audio_clean costs a little latency, haiku_brainz needs the Claude CLI.
     "audio_clean": False,
     "haiku_brainz": False,
+    # The phone companion presses Enter after typing — tapping send on the phone is
+    # the intent to submit. Set false for type-only. It still obeys the gates above.
+    "phone_submit": True,
     "haiku_timeout": 12.0,
 }
 

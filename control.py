@@ -152,8 +152,17 @@ class ControlServer:
 
         Flushing first matters: capture would otherwise hold the audio until
         `silence_ms` of trailing silence elapses, adding almost a second of lag to
-        every push-to-talk phrase."""
+        every push-to-talk phrase.
+
+        `keyboard.on_release_key` fires on EVERY release of the combo's last key
+        (a bare space, with no modifiers, in any mode), so flush only when a real PTT
+        hold is being ended — `ptt_held` is set exclusively by `_ptt_press`, which needs
+        the whole combo. Without this check a stray spacebar tap would cut whatever
+        sentence is in flight in half."""
+        was_held = bool(self._state.get("ptt_held", False))
         self._state["ptt_held"] = False
+        if not was_held:
+            return
         if self._capture_ref is not None:
             try:
                 self._capture_ref.flush()

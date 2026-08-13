@@ -134,3 +134,38 @@ def test_example_config_only_uses_known_keys():
                if k not in config.DEFAULTS and not k.startswith("_")
                and k not in ("listening",)]
     assert not unknown, f"example config has keys the loader ignores: {unknown}"
+
+
+def test_type_text_guarded_refuses_a_blocklisted_window(monkeypatch):
+    monkeypatch.setattr(keytyper, "foreground_title", lambda: "Bank Login — Chrome")
+    typed = []
+    monkeypatch.setattr(keytyper, "type_text", lambda t, d=0: typed.append(t))
+    assert keytyper.type_text_guarded("סיסמה", blocklist=["bank"]) == "skipped-blocklisted"
+    assert not typed, "nothing may reach a blocklisted window"
+
+
+def test_type_text_guarded_types_when_allowed(monkeypatch):
+    monkeypatch.setattr(keytyper, "foreground_title", lambda: "Claude — Dictation")
+    typed = []
+    monkeypatch.setattr(keytyper, "type_text", lambda t, d=0: typed.append(t))
+    assert keytyper.type_text_guarded("שלום", blocklist=["bank"]) == "typed"
+    assert typed == ["שלום"]
+
+
+def test_type_text_guarded_with_no_blocklist_never_queries_the_window(monkeypatch):
+    def explode():
+        raise AssertionError("must not look at the foreground window for an empty blocklist")
+
+    monkeypatch.setattr(keytyper, "foreground_title", explode)
+    monkeypatch.setattr(keytyper, "type_text", lambda t, d=0: None)
+    assert keytyper.type_text_guarded("שלום") == "typed"
+
+
+def test_phone_submit_default_is_documented():
+    """clod_mic_server reads phone_submit; the example config must mention the gates
+    the phone path now honours."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(here, "clod_mic_server.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "type_text_guarded" in src, "the phone path must cross the typing gate"
+    assert "submit_title_patterns" in src, "the phone path must honour the Enter gate"

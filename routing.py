@@ -22,7 +22,7 @@ DEFAULT_ALIASES: dict[str, list[str]] = {
 # Which logical target each keyword phrase in clod_keywords.json belongs to.
 _TARGET_HINTS = {
     "claude": ("קלוד", "claude", "clod", "cloud", "כלוד", "קולד", "קלאוד", "קלוו"),
-    "grok": ("גרוק", "grok", "גראוק", "גורוק"),
+    "grok": ("גרוק", "grok", "גראוק", "גורוק", "גרוֹק"),
 }
 
 _STRIP = ".,!:;?—־-'\"“”׳״"
@@ -84,5 +84,10 @@ def split_route(text: str, aliases: dict[str, list[str]] | None = None):
                 best = (target, len(a))
     if best is None:
         return None, s
-    payload = s[best[1]:].lstrip(_STRIP + " \t\n").strip()
-    return best[0], payload
+    rest = s[best[1]:]
+    # Eat only the punctuation directly attached to the wake word ("קלוד, …"), not
+    # everything at the head of the payload — dictated quotes and a leading minus are
+    # part of what the speaker said.
+    while rest[:1] and rest[0] in _STRIP:
+        rest = rest[1:]
+    return best[0], rest.strip()

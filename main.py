@@ -74,9 +74,11 @@ def is_armed() -> bool:
     return bool(_state.get("listening", False))
 
 
-def utterance_handler(audio: np.ndarray, sr: int, armed: bool = True):
+def utterance_handler(audio: np.ndarray, sr: int, armed: bool = True,
+                      speech_samples: int | None = None):
     """Called on the capture worker thread when an utterance is ready.
-    `armed` is the gate state sampled when the speaker STARTED talking."""
+    `armed` is the gate state sampled when the speaker STARTED talking;
+    `speech_samples` is the buffer minus its trailing silence."""
     if not armed:
         return
 
@@ -85,7 +87,7 @@ def utterance_handler(audio: np.ndarray, sr: int, armed: bool = True):
     t0 = time.monotonic()
     try:
         audio = postprocess.clean_audio(audio, sr, enabled=cfg.get("audio_clean", False))
-        text, lang = _stt.transcribe(audio, sr)
+        text, lang = _stt.transcribe(audio, sr, speech_samples=speech_samples)
     except Exception as e:
         log.error(f"STT error: {e}")
         return

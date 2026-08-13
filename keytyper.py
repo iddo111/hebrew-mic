@@ -43,13 +43,25 @@ class KEYBDINPUT(ctypes.Structure):
         ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
     ]
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
 # NOTE: the union must be sized for the LARGEST INPUT member (MOUSEINPUT), not just
 # KEYBDINPUT. On 64-bit Windows MOUSEINPUT is 32 bytes (its trailing ULONG_PTR forces
-# 8-byte alignment), so sizeof(INPUT) must be 40. A 24-byte union (KEYBDINPUT only)
-# yields sizeof(INPUT)=32, which SendInput rejects with ERROR_INVALID_PARAMETER (87)
-# and silently sends 0 events. Pad to 32 so the struct size is correct on Win64.
+# 8-byte alignment), so sizeof(INPUT) must be 40. A KEYBDINPUT-only union yields
+# sizeof(INPUT)=32, which SendInput rejects with ERROR_INVALID_PARAMETER (87) and
+# silently sends 0 events. Declaring the real MOUSEINPUT member lets ctypes size the
+# union from the running ABI — 40 on Win64, 28 on 32-bit Python — instead of a
+# hard-coded pad that is only right on one of them.
 class _INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT), ("padding", ctypes.c_byte * 32)]
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
 
 class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("_input", _INPUT_UNION)]
@@ -175,16 +187,6 @@ MOUSEEVENTF_VIRTUALDESK = 0x4000
 INPUT_MOUSE = 0
 SM_XVIRTUALSCREEN = 76; SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78; SM_CYVIRTUALSCREEN = 79
-
-class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [
-        ("dx", wintypes.LONG),
-        ("dy", wintypes.LONG),
-        ("mouseData", wintypes.DWORD),
-        ("dwFlags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-    ]
 
 class _MINPUT_UNION(ctypes.Union):
     _fields_ = [("mi", MOUSEINPUT), ("padding", ctypes.c_byte * 24)]
@@ -325,6 +327,20 @@ def title_matches(title: str, patterns) -> bool:
 
 
 DEFAULT_SUBMIT_TITLES = ("claude",)
+
+
+def type_text_guarded(text: str, blocklist=(), delay_ms: int = 0) -> str:
+    """type_text, but refuses when the foreground window title is blocklisted.
+
+    Lives here rather than in main.py so EVERY front-end — the local engine, the widget
+    and the phone server — crosses the same gate. Returns 'typed' or 'skipped-blocklisted'."""
+    if blocklist:
+        fg = foreground_title()
+        if title_matches(fg, blocklist):
+            log.warning("foreground %r is blocklisted -> not typing", fg)
+            return "skipped-blocklisted"
+    type_text(text, delay_ms)
+    return "typed"
 
 
 def submit_to_claude(hwnd: int = 0, focus_cb=None,

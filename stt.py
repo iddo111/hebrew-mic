@@ -155,21 +155,29 @@ class WhisperSTT:
             good_parts.append(t)
         return " ".join(good_parts).strip(), (info.language or "unknown")
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> tuple[str, str]:
+    def transcribe(self, audio: np.ndarray, sample_rate: int,
+                   speech_samples: int | None = None) -> tuple[str, str]:
         """
         Returns (text, detected_language). ("", "") when no real speech / on failure.
+
+        `speech_samples` is the part of `audio` that was above the energy threshold.
+        The buffer handed to us always ends with silence_ms of trailing silence, so its
+        total length is never evidence that a word was spoken — pass the speech portion
+        so a one-word transcript can be told apart from a silence hallucination.
         Self-healing: VAD error -> retry without VAD; CUDA/torch error under GPU
         pressure -> reload on CPU once and retry. Never raises to the widget loop.
         """
         if self._model is None:
             raise RuntimeError("call load() first")
+        # Measured against the ORIGINAL sample rate, before any resampling below.
+        speech_sec = (len(audio) if speech_samples is None else speech_samples) / float(sample_rate or 16000)
         if sample_rate != 16000:
             audio = self._resample(audio, sample_rate, 16000)
         # contiguous float32 — a non-contiguous/sliced array trips "expected tensor" errors
         audio = np.ascontiguousarray(audio, dtype=np.float32)
         lang_hint = None if self._language == "auto" else self._language
         # Long enough to be a deliberate word? Then keep short answers ("כן"/"לא").
-        allow_short = (len(audio) / 16000.0) >= SHORT_UTTERANCE_SEC
+        allow_short = speech_sec >= SHORT_UTTERANCE_SEC
 
         try:
             return self._run_once(audio, lang_hint, use_vad=True, allow_short_words=allow_short)

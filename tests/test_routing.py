@@ -54,10 +54,23 @@ def test_word_prefix_is_not_a_wake_word():
 
 
 def test_longest_alias_wins():
-    aliases = {"claude": ["קלוד", "היי קלוד"]}
+    """Both aliases match at position 0, so a first-match-wins parser would fail here."""
+    aliases = {"claude": ["היי", "היי קלוד"]}
     target, payload = routing.split_route("היי קלוד מה קורה", aliases)
     assert target == "claude"
     assert payload == "מה קורה"
+
+
+def test_longest_alias_wins_regardless_of_declaration_order():
+    aliases = {"claude": ["היי קלוד", "היי"]}
+    assert routing.split_route("היי קלוד מה קורה", aliases) == ("claude", "מה קורה")
+
+
+def test_dictated_punctuation_is_preserved():
+    """Only the separator attached to the wake word is eaten — quotes and a leading
+    minus are things the speaker actually said."""
+    assert routing.split_route('קלוד "שלום עולם"') == ("claude", '"שלום עולם"')
+    assert routing.split_route("קלוד -5 מעלות") == ("claude", "-5 מעלות")
 
 
 def test_empty_input():
@@ -98,3 +111,20 @@ def test_repo_keywords_file_parses():
     aliases = routing.load_aliases()
     assert "קלוד" in aliases["claude"]
     assert "גרוק" in aliases["grok"]
+
+
+def test_shipped_file_carries_every_builtin_alias():
+    """clod_keywords.json is the source of truth, so it must not silently lose the
+    Whisper mishears the engine used to hardcode."""
+    aliases = routing.load_aliases()
+    for target, words in routing.DEFAULT_ALIASES.items():
+        for word in words:
+            assert word in aliases[target], f"{word!r} missing from clod_keywords.json"
+
+
+def test_mishears_route_through_the_shipped_file():
+    aliases = routing.load_aliases()
+    for word in ("כלוד", "קולד", "קלאוד", "קלוו"):
+        assert routing.split_route(f"{word} שלום", aliases)[0] == "claude", word
+    for word in ("גראוק", "גורוק"):
+        assert routing.split_route(f"{word} שלום", aliases)[0] == "grok", word

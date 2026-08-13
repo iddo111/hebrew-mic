@@ -114,6 +114,9 @@ require a shared token:
   `CLOD_MIC_ORIGIN` only if you deliberately serve the page from elsewhere.
 - `control.py` binds loopback **and** requires the token: any web page in any browser
   tab on the machine can POST to `127.0.0.1`, so loopback alone is not authentication.
+- The phone endpoints obey the same window gates as the local mic — `type_blocklist`,
+  `submit_title_patterns` and `auto_enter_blocklist` — so a request off the network can
+  never do more than the mic on your desk.
 
 ## Tests
 
@@ -139,6 +142,7 @@ auth token) and runs on every push via GitHub Actions.
 | `submit_title_patterns` | window titles allowed to receive the auto-Enter (default: `claude`) |
 | `auto_enter_blocklist` / `type_blocklist` | window titles that may never be submitted to / typed into |
 | `audio_clean` / `haiku_brainz` | enable the denoise+AGC and Claude-CLI autocorrect stages |
+| `phone_submit` | the Android companion presses Enter after typing (set false for type-only) |
 
 Wake words live in `clod_keywords.json` and are read by both front-ends
 (`routing.load_aliases`); stop/submit phrases in the same file drive the widget's
