@@ -3,12 +3,25 @@
 # Tray icon via pystray.
 # Exposes /devices for mic-selection dropdown in widget.
 
-import threading, logging, time, os
+import threading, logging, time, os, functools
 import flask
 from flask import request, jsonify
 import keyboard as kb
 
+import authtoken
+
 log = logging.getLogger("dictation.control")
+
+
+def _require_token(fn):
+    """Guard for state-changing routes. Binding to 127.0.0.1 is NOT authentication:
+    any page in any browser tab on this machine can POST to a localhost port."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        if not authtoken.check(authtoken.extract(request.headers, request.args)):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return fn(*a, **kw)
+    return wrapper
 
 
 class ControlServer:
@@ -44,6 +57,7 @@ class ControlServer:
         app = self._flask
 
         @app.route("/listen", methods=["POST"])
+        @_require_token
         def listen_toggle():
             data = request.get_json(force=True, silent=True) or {}
             on = bool(data.get("on", True))
@@ -52,6 +66,7 @@ class ControlServer:
             return jsonify({"ok": True, "listening": on})
 
         @app.route("/config", methods=["POST"])
+        @_require_token
         def config_update():
             data = request.get_json(force=True, silent=True) or {}
             self._cfg.update(data)
@@ -97,17 +112,8 @@ class ControlServer:
                     return jsonify({"error": str(e)}), 500
             return jsonify([])
 
-        @app.route("/dashboard", methods=["GET"])
-        def dashboard():
-            import os as _os
-            p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "dashboard.html")
-            try:
-                with open(p, encoding="utf-8") as fh:
-                    return flask.Response(fh.read(), mimetype="text/html")
-            except Exception as e:
-                return (f"dashboard.html not found: {e}", 500)
-
         @app.route("/dispatch", methods=["POST"])
+        @_require_token
         def dispatch():
             """Receive text from Clod Mic PWA and pipe to claude CLI."""
             import subprocess, os as _os
@@ -142,8 +148,26 @@ class ControlServer:
         self._update_tray()
 
     def _ptt_release(self):
-        """PTT key up — disable listening."""
+        """PTT key up — close the utterance immediately, then disable listening.
+
+        Flushing first matters: capture would otherwise hold the audio until
+        `silence_ms` of trailing silence elapses, adding almost a second of lag to
+        every push-to-talk phrase.
+
+        `keyboard.on_release_key` fires on EVERY release of the combo's last key
+        (a bare space, with no modifiers, in any mode), so flush only when a real PTT
+        hold is being ended — `ptt_held` is set exclusively by `_ptt_press`, which needs
+        the whole combo. Without this check a stray spacebar tap would cut whatever
+        sentence is in flight in half."""
+        was_held = bool(self._state.get("ptt_held", False))
         self._state["ptt_held"] = False
+        if not was_held:
+            return
+        if self._capture_ref is not None:
+            try:
+                self._capture_ref.flush()
+            except Exception as e:
+                log.warning(f"PTT flush failed: {e}")
         if self._state.get("mode", "ptt") == "ptt":
             self._state["listening"] = False
             self._update_tray()
@@ -236,6 +260,8 @@ class ControlServer:
         )
         t.start()
         log.info(f"HTTP control on http://127.0.0.1:{self._port}")
+        log.info(f"Access token for POST routes: {authtoken.get_token()} "
+                 f"(also in {authtoken.TOKEN_FILE}; override with ${authtoken.ENV_VAR})")
 
         # Tray in daemon thread
         tray_t = threading.Thread(target=self._start_tray, daemon=True, name="dictation-tray")

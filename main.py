@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 import config as cfg_mod
 from capture import MicCapture
 from stt import WhisperSTT
-import typer as typer_mod
+import keytyper as typer_mod
+import postprocess
+import routing
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,24 +36,9 @@ _WIN_TARGETS = {
                "procs": ["claude.exe", "windowsterminal.exe", "powershell.exe", "pwsh.exe", "cmd.exe"]},
     "grok":   {"titles": ["grok"], "procs": ["grok.exe"]},
 }
-_ROUTE_ALIASES = {
-    "claude": ["קלוד", "claude", "clod", "כלוד", "קולד", "קלאוד", "קלוו"],
-    "grok":   ["גרוק", "grok", "גראוק", "גורוק", "גרוֹק"],
-}
-
-
-def _route(text: str):
-    """If the utterance starts with a route word return (target, payload-after-word);
-    else (None, full text). The route word itself is consumed, never typed."""
-    s = (text or "").strip()
-    words = s.split()
-    if not words:
-        return None, s
-    first = words[0].lower().strip(".,!:—־-'\"")
-    for tgt, aliases in _ROUTE_ALIASES.items():
-        if first in aliases:
-            return tgt, s[len(words[0]):].lstrip(" ,!:—־-'\"").strip()
-    return None, s
+# Wake words come from clod_keywords.json (which the README documents as their home),
+# with routing.DEFAULT_ALIASES as the fallback if that file is missing or edited badly.
+_ROUTE_ALIASES = routing.load_aliases()
 
 
 # ── shared state ──────────────────────────────────────────────────────────────
@@ -64,43 +51,66 @@ _state: dict = {
     "mode": "ptt",           # "ptt" | "always_on"
     "ptt_held": False,       # True while PTT hotkey is held
     "level_rms": 0.0,        # live mic level (updated by capture thread)
+    "last_submit": "",       # outcome of the last auto-Enter attempt
+    "hb_context": "",        # rolling context handed to HaikuBrainz
     "quit": False,
 }
+_state_lock = threading.Lock()
 
 _capture: MicCapture = None
 _stt: WhisperSTT = None
 
 
-def utterance_handler(audio: np.ndarray, sr: int):
-    """Called by capture thread when an utterance is ready."""
-    # In PTT mode, only process if button is held OR we're in always_on
-    mode = _state.get("mode", "ptt")
-    # SAFETY (Iddo 2026-06-10): type ONLY on explicit activation — PTT held in ptt mode,
-    # or listening explicitly turned on in always_on mode. Ambient audio is dropped, so a
-    # revived/idle process can never auto-type into the focused window.
-    if mode == "ptt":
-        if not _state.get("ptt_held", False):
-            return
-    elif not _state.get("listening", False):
+def is_armed() -> bool:
+    """SAFETY (Iddo 2026-06-10): dictation is live ONLY on explicit activation — the PTT
+    key held down in ptt mode, or listening explicitly turned on in always_on mode. A
+    revived or idle process can never auto-type into the focused window.
+
+    capture.MicCapture samples this at SPEECH ONSET and passes the answer back with the
+    utterance, because by the time an utterance is flushed (after silence_ms of trailing
+    silence) the PTT key has already been released."""
+    if _state.get("mode", "ptt") == "ptt":
+        return bool(_state.get("ptt_held", False))
+    return bool(_state.get("listening", False))
+
+
+def utterance_handler(audio: np.ndarray, sr: int, armed: bool = True,
+                      speech_samples: int | None = None):
+    """Called on the capture worker thread when an utterance is ready.
+    `armed` is the gate state sampled when the speaker STARTED talking;
+    `speech_samples` is the buffer minus its trailing silence."""
+    if not armed:
         return
+
+    cfg = cfg_mod.load()
 
     t0 = time.monotonic()
     try:
-        text, lang = _stt.transcribe(audio, sr)
+        audio = postprocess.clean_audio(audio, sr, enabled=cfg.get("audio_clean", False))
+        text, lang = _stt.transcribe(audio, sr, speech_samples=speech_samples)
     except Exception as e:
         log.error(f"STT error: {e}")
         return
 
-    latency_ms = (time.monotonic() - t0) * 1000
     if not text:
         return
 
-    log.info(f"[{lang}] {text!r}  ({latency_ms:.0f}ms)")
-    _state["utterances_total"] += 1
-    _state["last_text"] = text
-    _state["last_lang"] = lang
+    # Shared polish stage: HaikuBrainz (opt-in) + the teachable corrections map.
+    text = postprocess.fix_text(
+        text, _state.get("hb_context", ""),
+        haiku=bool(cfg.get("haiku_brainz", False)),
+        timeout=float(cfg.get("haiku_timeout", 12.0)),
+    )
+    if not text:
+        return
+    _state["hb_context"] = postprocess.push_context(_state.get("hb_context", ""), text)
 
-    cfg = cfg_mod.load()
+    latency_ms = (time.monotonic() - t0) * 1000
+    log.info(f"[{lang}] {text!r}  ({latency_ms:.0f}ms)")
+    with _state_lock:
+        _state["utterances_total"] += 1
+        _state["last_text"] = text
+        _state["last_lang"] = lang
 
     # ── Smart routing + submit (Iddo 2026-06-11) ──
     # "קלוד ..." → type into the Claude window; "גרוק ..." → the Grok window;
@@ -110,7 +120,10 @@ def utterance_handler(audio: np.ndarray, sr: int):
     stripped = text.strip()
     if not stripped:
         return
-    target, payload = _route(stripped)
+    if cfg.get("default_route", "smart") == "smart":
+        target, payload = routing.split_route(stripped, _ROUTE_ALIASES)
+    else:
+        target, payload = None, stripped   # 'focused': never steal focus, always type here
     if target and not payload:
         return  # just the route word ("קלוד"/"גרוק") with nothing after — ignore
     if target and _winrouter is not None:
@@ -124,6 +137,16 @@ def utterance_handler(audio: np.ndarray, sr: int):
                 log.warning(f"route {target}: {info} — typing into the focused window instead")
         except Exception as e:
             log.warning(f"route {target} error: {e}")
+
+    # SAFETY: the Enter gate alone is not enough — refuse to TYPE into a window the
+    # user has blocklisted (password prompts, banking, a lock screen).
+    type_blocklist = cfg.get("type_blocklist", [])
+    fg_title = typer_mod.foreground_title()
+    if type_blocklist and typer_mod.title_matches(fg_title, type_blocklist):
+        log.warning(f"foreground {fg_title!r} is blocklisted — not typing")
+        _state["last_submit"] = "skipped-blocklisted"
+        return
+
     typer_mod.type_text(payload + " ")
     # ── SMART auto-Enter (Iddo 2026-06-11) ──
     # Press Enter at the end of the utterance ONLY when (a) auto_enter is on, (b) there is
@@ -132,10 +155,21 @@ def utterance_handler(audio: np.ndarray, sr: int):
     # foreground is a Claude window (title contains "claude") and refuses otherwise — so a
     # stray Enter never lands in a non-Claude window. Typing still happens everywhere; only
     # the auto-submit is Claude-gated, exactly the smart toggle requested.
-    if cfg.get("auto_enter", True) and payload.split() and _state.get("listening", False):
+    if cfg.get("auto_enter", False) and payload.split():
         time.sleep(float(cfg.get("enter_delay", 0.07)))  # tunable via dictation.json; let text commit then submit
-        m = typer_mod.submit_to_claude(0)
-        log.info(f"auto-enter -> {m}")
+        m = typer_mod.submit_to_claude(
+            0,
+            allow_titles=cfg.get("submit_title_patterns", list(typer_mod.DEFAULT_SUBMIT_TITLES)),
+            blocklist=cfg.get("auto_enter_blocklist", []),
+        )
+        _state["last_submit"] = m
+        if m.startswith("skipped"):
+            # Typing succeeded but the message was NOT sent — say so plainly instead of
+            # leaving the speaker to wonder why nothing happened.
+            log.warning(f"typed into {fg_title!r} but did NOT press Enter ({m}); "
+                        f"submit_title_patterns={cfg.get('submit_title_patterns', list(typer_mod.DEFAULT_SUBMIT_TITLES))}")
+        else:
+            log.info(f"auto-enter -> {m}")
 
 
 def _level_update_loop():
@@ -162,8 +196,8 @@ def main():
     # always_on = listen immediately (Iddo wants the mic live); ptt stays inert until key held
     _state["listening"] = (_state["mode"] == "always_on")
 
-    # start mic capture
-    _capture = MicCapture(cfg, utterance_handler)
+    # start mic capture — is_armed() is sampled at speech onset, not at flush time
+    _capture = MicCapture(cfg, utterance_handler, gate=is_armed)
     _capture.start()
     log.info(f"Mic: [{_capture.device_index}] {_capture.device_name} | SR={cfg['sample_rate']} | Gain={cfg.get('software_gain',14.0)}x")
 

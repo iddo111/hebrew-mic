@@ -1,10 +1,32 @@
-# dictation/typer.py — Windows Unicode keystroke injection + auto-Enter (OURS)
+# dictation/keytyper.py — Windows Unicode keystroke injection + auto-Enter (OURS)
 # Uses SendInput with KEYEVENTF_UNICODE (0x0004) so Hebrew codepoints type correctly.
 # Does NOT use the cp1252 path — that garbles non-ASCII. Pure ctypes, no external libs.
+#
+# Named keytyper (not typer) so it can never shadow the `typer` package on PyPI —
+# importing this module must not change what `import typer` means for anything else
+# in the environment.
+#
+# Importable on every OS: the Win32 surface is resolved lazily and every public
+# entry point degrades to a logged no-op off Windows, so the STT engine and the
+# PWA server can run on Linux/macOS (README promises exactly that).
 
-import ctypes, ctypes.wintypes, time, os, logging
+import ctypes, time, os, sys, logging
 
-log = logging.getLogger("dictation.typer")
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    import ctypes.wintypes as wintypes
+else:  # minimal stand-ins so the ctypes.Structure definitions below still build
+    class _Types:
+        WORD = ctypes.c_uint16
+        DWORD = ctypes.c_uint32
+        LONG = ctypes.c_int32
+
+    wintypes = _Types()
+
+log = logging.getLogger("dictation.keytyper")
+
+UNSUPPORTED = "unsupported-platform"
 
 # ── Win32 structs ─────────────────────────────────────────────────────────────
 INPUT_KEYBOARD = 1
@@ -14,25 +36,48 @@ VK_RETURN = 0x0D
 
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [
-        ("wVk",         ctypes.wintypes.WORD),
-        ("wScan",       ctypes.wintypes.WORD),
-        ("dwFlags",     ctypes.wintypes.DWORD),
-        ("time",        ctypes.wintypes.DWORD),
+        ("wVk",         wintypes.WORD),
+        ("wScan",       wintypes.WORD),
+        ("dwFlags",     wintypes.DWORD),
+        ("time",        wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
         ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
     ]
 
 # NOTE: the union must be sized for the LARGEST INPUT member (MOUSEINPUT), not just
 # KEYBDINPUT. On 64-bit Windows MOUSEINPUT is 32 bytes (its trailing ULONG_PTR forces
-# 8-byte alignment), so sizeof(INPUT) must be 40. A 24-byte union (KEYBDINPUT only)
-# yields sizeof(INPUT)=32, which SendInput rejects with ERROR_INVALID_PARAMETER (87)
-# and silently sends 0 events. Pad to 32 so the struct size is correct on Win64.
+# 8-byte alignment), so sizeof(INPUT) must be 40. A KEYBDINPUT-only union yields
+# sizeof(INPUT)=32, which SendInput rejects with ERROR_INVALID_PARAMETER (87) and
+# silently sends 0 events. Declaring the real MOUSEINPUT member lets ctypes size the
+# union from the running ABI — 40 on Win64, 28 on 32-bit Python — instead of a
+# hard-coded pad that is only right on one of them.
 class _INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT), ("padding", ctypes.c_byte * 32)]
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
 
 class INPUT(ctypes.Structure):
-    _fields_ = [("type", ctypes.wintypes.DWORD), ("_input", _INPUT_UNION)]
+    _fields_ = [("type", wintypes.DWORD), ("_input", _INPUT_UNION)]
 
-user32 = ctypes.windll.user32
+class _NoWin32:
+    """Stand-in for user32 off Windows: every call is a logged no-op returning 0,
+    so a stray code path can never raise AttributeError mid-utterance."""
+
+    def __getattr__(self, name):
+        def _noop(*_a, **_kw):
+            log.debug("keytyper: %s() ignored — not running on Windows", name)
+            return 0
+        return _noop
+
+
+user32 = ctypes.windll.user32 if IS_WINDOWS else _NoWin32()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 def _make_unicode_input(codepoint: int, keyup: bool) -> INPUT:
@@ -61,8 +106,12 @@ def type_text(text: str, delay_ms: int = 0) -> None:
     """
     Inject `text` as Unicode keystrokes into the focused window.
     Handles BMP codepoints (covers all Hebrew + ASCII). Surrogate pairs for SMP chars.
+    No-op off Windows.
     """
     if not text:
+        return
+    if not IS_WINDOWS:
+        log.warning("keystroke injection needs Windows — not typing %d chars", len(text))
         return
     inputs: list[INPUT] = []
     for ch in text:
@@ -97,7 +146,9 @@ def press_enter() -> None:
     key-repeat flag, which SendInput sets if Enter's async down-state is stale. So we
     first clear any lingering down-state, then send a clean down/up pair. The scan code
     is included because CEF reads it; KEYEVENTF_EXTENDEDKEY makes it an unambiguous Enter."""
-    flags_down = SC_RETURN  # kept for clarity; _make_vk_input takes (vk, keyup, scan)
+    if not IS_WINDOWS:
+        log.warning("press_enter needs Windows — ignored")
+        return
     # 1) clear stale physical/async down-state so the synthesized event is not a repeat
     try:
         if user32.GetAsyncKeyState(VK_RETURN) & 0x8000:
@@ -137,21 +188,11 @@ INPUT_MOUSE = 0
 SM_XVIRTUALSCREEN = 76; SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78; SM_CYVIRTUALSCREEN = 79
 
-class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [
-        ("dx", ctypes.wintypes.LONG),
-        ("dy", ctypes.wintypes.LONG),
-        ("mouseData", ctypes.wintypes.DWORD),
-        ("dwFlags", ctypes.wintypes.DWORD),
-        ("time", ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-    ]
-
 class _MINPUT_UNION(ctypes.Union):
     _fields_ = [("mi", MOUSEINPUT), ("padding", ctypes.c_byte * 24)]
 
 class MINPUT(ctypes.Structure):
-    _fields_ = [("type", ctypes.wintypes.DWORD), ("_input", _MINPUT_UNION)]
+    _fields_ = [("type", wintypes.DWORD), ("_input", _MINPUT_UNION)]
 
 def _set_dpi_aware():
     """Per-monitor DPI awareness so GetWindowRect / cursor math match real pixels."""
@@ -189,8 +230,8 @@ def _input_box_point(hwnd: int):
     (the composer sits ~120-200px above the bottom on a maximized 4K window). This adapts
     to any window size/position instead of hard-coding session-specific coordinates."""
     class RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.wintypes.LONG), ("top", ctypes.wintypes.LONG),
-                    ("right", ctypes.wintypes.LONG), ("bottom", ctypes.wintypes.LONG)]
+        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                    ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
     r = RECT()
     if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
         return None
@@ -267,7 +308,43 @@ def _uia_invoke_send(hwnd: int) -> bool:
 # press Enter while the caret is still fresh from typing — no fragile coordinate guessing.
 CLICK_CARET = False
 
-def submit_to_claude(hwnd: int = 0, focus_cb=None) -> str:
+def foreground_title() -> str:
+    """Lower-cased title of the foreground window ('' when unavailable)."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(user32.GetForegroundWindow(), buf, 256)
+        return (buf.value or "").lower()
+    except Exception:
+        return ""
+
+
+def title_matches(title: str, patterns) -> bool:
+    """True if `title` contains any of `patterns` (case-insensitive)."""
+    t = (title or "").lower()
+    return any(p and p.lower() in t for p in (patterns or ()))
+
+
+DEFAULT_SUBMIT_TITLES = ("claude",)
+
+
+def type_text_guarded(text: str, blocklist=(), delay_ms: int = 0) -> str:
+    """type_text, but refuses when the foreground window title is blocklisted.
+
+    Lives here rather than in main.py so EVERY front-end — the local engine, the widget
+    and the phone server — crosses the same gate. Returns 'typed' or 'skipped-blocklisted'."""
+    if blocklist:
+        fg = foreground_title()
+        if title_matches(fg, blocklist):
+            log.warning("foreground %r is blocklisted -> not typing", fg)
+            return "skipped-blocklisted"
+    type_text(text, delay_ms)
+    return "typed"
+
+
+def submit_to_claude(hwnd: int = 0, focus_cb=None,
+                     allow_titles=DEFAULT_SUBMIT_TITLES, blocklist=()) -> str:
     """Robust submit into the Claude composer.
 
     Steps:
@@ -280,7 +357,13 @@ def submit_to_claude(hwnd: int = 0, focus_cb=None) -> str:
       3) Fallback: UIAutomation Invoke on a Send button (no-op for the buttonless composer;
          works if a future/alternate Claude window exposes one).
 
+    `allow_titles` is the whitelist of foreground-window title substrings that may
+    receive the Enter (default: Claude only); `blocklist` always wins over it.
+
     Returns the method used: 'enter-only', 'click+enter', or 'uia-invoke'. Never raises."""
+    if not IS_WINDOWS:
+        log.warning("submit needs Windows — refusing Enter")
+        return UNSUPPORTED
     method = "enter-only"
     try:
         if focus_cb:
@@ -289,8 +372,8 @@ def submit_to_claude(hwnd: int = 0, focus_cb=None) -> str:
             except Exception:
                 pass
         # SAFETY (Iddo 2026-06-10): never a blind global Enter. Only submit when the REAL
-        # foreground window is the intended target AND its title looks like Claude — else
-        # refuse, so a stray Enter can never land in Claude Code / a terminal / an editor.
+        # foreground window is the intended target AND its title is whitelisted — else
+        # refuse, so a stray Enter can never land in a terminal, an editor or a password box.
         fg = user32.GetForegroundWindow()
         if hwnd and fg != hwnd:
             log.warning("submit_to_claude: foreground %s != target %s -> refusing Enter", fg, hwnd)
@@ -301,8 +384,12 @@ def submit_to_claude(hwnd: int = 0, focus_cb=None) -> str:
             ftitle = (buf.value or "").lower()
         except Exception:
             ftitle = ""
-        if "claude" not in ftitle:
-            log.warning("submit_to_claude: foreground title %r not Claude -> refusing Enter", ftitle)
+        if title_matches(ftitle, blocklist):
+            log.warning("submit_to_claude: foreground title %r is blocklisted -> refusing Enter", ftitle)
+            return "skipped-blocklisted"
+        if not title_matches(ftitle, allow_titles):
+            log.warning("submit_to_claude: foreground title %r not in %s -> refusing Enter",
+                        ftitle, tuple(allow_titles))
             return "skipped-not-foreground"
         if CLICK_CARET and hwnd and focus_input_box(hwnd):
             method = "click+enter"
@@ -322,7 +409,7 @@ def get_foreground_exe() -> str:
     """Return the exe name of the foreground window (for blocklist check)."""
     try:
         hwnd = user32.GetForegroundWindow()
-        pid = ctypes.wintypes.DWORD()
+        pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         import psutil
         return psutil.Process(pid.value).name().lower()

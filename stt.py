@@ -8,25 +8,31 @@ import logging
 
 log = logging.getLogger("dictation.stt")
 
-# Known Whisper hallucinations on silence/noise — drop these entirely
-_HALLUCINATION_PATTERNS = [
+# Known Whisper hallucinations — these are noise artifacts at ANY utterance length.
+_ALWAYS_PATTERNS = [
     r"^\s*$",
     r"^[\s\.\!\?]+$",
     r"^\s*you[\.\s]*$",
-    r"^\s*thank you[\.\s]*$",
     r"^\s*thanks for watching[\.\s]*$",
     r"^\s*\*\*.*\*\*\s*$",
     r"^\s*\[.*\]\s*$",
     r"^\s*\(.*\)\s*$",
     r"^\s*\.+\s*$",
     r"^\s*(?:uh+|um+|eh+|hmm+)\s*$",
-    # Single Hebrew letter(s) only — noise artifact
-    r"^[\sא-ת]{1,3}\s*[.\s]*$",
-    # Common Hebrew Whisper hallucinations on silence
-    r"^\s*תודה[\.\s,!]*$",
-    r"^\s*תודה\s+רבה[\.\s,!]*$",
     r"^\s*תודה\s+רבה\s+על\s+הצפייה[\.\s,!]*$",
     r"^\s*תודה\s+שצפיתם[\.\s,!]*$",
+]
+
+# Words Whisper invents out of silence — but which a human also genuinely says.
+# Dropping these unconditionally made it impossible to dictate "כן", "לא" or "רגע",
+# so they are only rejected when the audio was too short to BE a real word
+# (see SHORT_UTTERANCE_SEC). A deliberate one-word answer clears that bar easily.
+_SHORT_ONLY_PATTERNS = [
+    r"^\s*thank you[\.\s]*$",
+    # 1-3 Hebrew letters only — usually a noise artifact
+    r"^[\sא-ת]{1,3}\s*[.\s]*$",
+    r"^\s*תודה[\.\s,!]*$",
+    r"^\s*תודה\s+רבה[\.\s,!]*$",
     r"^\s*בבקשה[\.\s,!]*$",
     r"^\s*כן[\.\s,!]*$",
     r"^\s*לא[\.\s,!]*$",
@@ -35,7 +41,13 @@ _HALLUCINATION_PATTERNS = [
     r"^\s*אמן[\.\s,!]*$",
     r"^\s*ביי[\.\s,!]*$",
 ]
-_HALLUCINATION_RE = [re.compile(p, re.IGNORECASE) for p in _HALLUCINATION_PATTERNS]
+
+# Audio shorter than this can't hold a deliberate spoken word, so the
+# short-only patterns above stay armed for it.
+SHORT_UTTERANCE_SEC = 0.6
+
+_ALWAYS_RE = [re.compile(p, re.IGNORECASE) for p in _ALWAYS_PATTERNS]
+_SHORT_ONLY_RE = [re.compile(p, re.IGNORECASE) for p in _SHORT_ONLY_PATTERNS]
 
 # Repeated token detection (e.g. "כתוביות כתוביות כתוביות")
 def _has_repeated_tokens(text: str, max_repeats: int = 3) -> bool:
@@ -118,7 +130,8 @@ class WhisperSTT:
                 raise
         return f"Whisper {self._model_name} / {self._device} / {compute}"
 
-    def _run_once(self, audio: np.ndarray, lang_hint, use_vad: bool) -> tuple[str, str]:
+    def _run_once(self, audio: np.ndarray, lang_hint, use_vad: bool,
+                  allow_short_words: bool = False) -> tuple[str, str]:
         """One faster-whisper pass. VAD optional (Silero-VAD can throw a torch
         tensor error under GPU pressure — the caller retries without it)."""
         kw = dict(
@@ -136,31 +149,42 @@ class WhisperSTT:
             if s.no_speech_prob > self._no_speech_threshold:
                 continue
             t = s.text.strip()
-            if self._is_hallucination(t) or _has_repeated_tokens(t) or _is_repeated_char_garbage(t):
+            if (self._is_hallucination(t, allow_short_words)
+                    or _has_repeated_tokens(t) or _is_repeated_char_garbage(t)):
                 continue
             good_parts.append(t)
         return " ".join(good_parts).strip(), (info.language or "unknown")
 
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> tuple[str, str]:
+    def transcribe(self, audio: np.ndarray, sample_rate: int,
+                   speech_samples: int | None = None) -> tuple[str, str]:
         """
         Returns (text, detected_language). ("", "") when no real speech / on failure.
+
+        `speech_samples` is the part of `audio` that was above the energy threshold.
+        The buffer handed to us always ends with silence_ms of trailing silence, so its
+        total length is never evidence that a word was spoken — pass the speech portion
+        so a one-word transcript can be told apart from a silence hallucination.
         Self-healing: VAD error -> retry without VAD; CUDA/torch error under GPU
         pressure -> reload on CPU once and retry. Never raises to the widget loop.
         """
         if self._model is None:
             raise RuntimeError("call load() first")
+        # Measured against the ORIGINAL sample rate, before any resampling below.
+        speech_sec = (len(audio) if speech_samples is None else speech_samples) / float(sample_rate or 16000)
         if sample_rate != 16000:
             audio = self._resample(audio, sample_rate, 16000)
         # contiguous float32 — a non-contiguous/sliced array trips "expected tensor" errors
         audio = np.ascontiguousarray(audio, dtype=np.float32)
         lang_hint = None if self._language == "auto" else self._language
+        # Long enough to be a deliberate word? Then keep short answers ("כן"/"לא").
+        allow_short = speech_sec >= SHORT_UTTERANCE_SEC
 
         try:
-            return self._run_once(audio, lang_hint, use_vad=True)
+            return self._run_once(audio, lang_hint, use_vad=True, allow_short_words=allow_short)
         except Exception as e:
             log.warning(f"transcribe failed ({type(e).__name__}: {e}); retry without VAD")
             try:
-                return self._run_once(audio, lang_hint, use_vad=False)
+                return self._run_once(audio, lang_hint, use_vad=False, allow_short_words=allow_short)
             except Exception as e2:
                 # CUDA/torch error (e.g. OOM on a crowded 8GB GPU) -> heal to CPU.
                 if self._device == "cuda":
@@ -169,16 +193,25 @@ class WhisperSTT:
                         from faster_whisper import WhisperModel
                         self._device = "cpu"
                         self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
-                        return self._run_once(audio, lang_hint, use_vad=False)
+                        return self._run_once(audio, lang_hint, use_vad=False,
+                                              allow_short_words=allow_short)
                     except Exception as e3:
                         log.error(f"CPU fallback also failed: {type(e3).__name__}: {e3}")
                 return "", ""
 
     @staticmethod
-    def _is_hallucination(text: str) -> bool:
-        for pat in _HALLUCINATION_RE:
+    def _is_hallucination(text: str, allow_short_words: bool = False) -> bool:
+        """True when `text` looks like a Whisper artifact rather than speech.
+
+        `allow_short_words=True` (set for utterances longer than SHORT_UTTERANCE_SEC)
+        keeps genuine one-word answers like "כן" / "לא" / "תודה"."""
+        for pat in _ALWAYS_RE:
             if pat.match(text):
                 return True
+        if not allow_short_words:
+            for pat in _SHORT_ONLY_RE:
+                if pat.match(text):
+                    return True
         return False
 
     @staticmethod

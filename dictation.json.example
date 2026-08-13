@@ -22,7 +22,6 @@
     "Speakers",
     "Sound Mapper"
   ],
-  "wasapi_shared": true,
   "whisper_model": "ivrit-ai/whisper-large-v3-turbo-ct2",
   "whisper_device": "cuda",
   "silence_ms": 900,
@@ -30,7 +29,11 @@
   "software_gain": 14.0,
   "dsp_enabled": true,
   "dsp_hpf_hz": 110.0,
-  "dsp_notch_freqs": [50, 100, 150],
+  "dsp_notch_freqs": [
+    50,
+    100,
+    150
+  ],
   "dsp_notch_q": 30.0,
   "dsp_noise_gate": 0.006,
   "no_speech_threshold": 0.65,
@@ -39,5 +42,13 @@
   "auto_enter_blocklist": [],
   "default_route": "smart",
   "listening": false,
-  "_notes": "Copy this to dictation.json and tune for your machine. whisper_device 'cuda' (GPU) or 'cpu'. whisper_model: a HF faster-whisper/CT2 model id or a local path. mode 'ptt' (push-to-talk, hold ptt_hotkey) or 'always_on'. auto_enter only fires when the foreground window is Claude. default_route 'smart' = a leading 'קלוד'/'גרוק' routes to that window; otherwise text goes to the focused window."
+  "submit_title_patterns": [
+    "claude"
+  ],
+  "type_blocklist": [],
+  "audio_clean": false,
+  "haiku_brainz": false,
+  "haiku_timeout": 12.0,
+  "phone_submit": true,
+  "_notes": "Copy this to dictation.json and tune for your machine. whisper_device 'cuda' (GPU) or 'cpu'. whisper_model: a HF faster-whisper/CT2 model id or a local path. mode 'ptt' (push-to-talk, hold ptt_hotkey) or 'always_on'. default_route 'smart' = a leading 'קלוד'/'גרוק' routes to that window, 'focused' = always type into the foreground window. auto_enter presses Enter only when the foreground window title matches submit_title_patterns and does NOT match auto_enter_blocklist. type_blocklist refuses to type at all into matching windows (password prompts, banking). audio_clean = denoise+AGC before Whisper; haiku_brainz = autocorrect via the Claude CLI. phone_submit: the Android companion presses Enter after typing (tapping send on the phone IS the intent to submit); set false for type-only. The phone path obeys type_blocklist / submit_title_patterns / auto_enter_blocklist too."
 }

@@ -2,7 +2,7 @@
 # Yields complete utterance numpy arrays to a callback when trailing silence detected.
 # Integrates mic_guard firewall: BT/loopback/virtual devices are NEVER selectable.
 
-import threading, numpy as np, sounddevice as sd
+import logging, queue, threading, numpy as np, sounddevice as sd
 import scipy.signal as sig_proc
 
 from mic_guard import (
@@ -14,13 +14,26 @@ from mic_guard import (
 class MicCapture:
     """
     Streams mic audio with DSP chain, detects utterances via energy threshold + trailing silence.
-    Calls `on_utterance(audio_np_float32, sample_rate)` in a background thread.
+    Calls `on_utterance(audio_np_float32, sample_rate, armed)` on a single worker thread, in
+    capture order — never one thread per utterance, so two quick sentences can't race each
+    other into Whisper and land out of order.
+
+    `armed` is the value `gate()` returned at the MOMENT SPEECH STARTED, not when the
+    utterance was flushed. That distinction is the whole point: an utterance is only
+    released after `silence_ms` of trailing silence, by which time a push-to-talk key has
+    long been let go. Sampling the gate at the end silently dropped every PTT utterance.
+
     Mic selection is enforced through mic_guard: BT/loopback/virtual devices are rejected.
     """
 
-    def __init__(self, cfg: dict, on_utterance):
+    def __init__(self, cfg: dict, on_utterance, gate=None):
         self._cfg = cfg
         self._on_utterance = on_utterance
+        # gate() -> bool, sampled at speech onset. Default: always armed.
+        self._gate = gate if gate is not None else (lambda: True)
+        self._armed_at_onset = True
+        self._work: "queue.Queue" = queue.Queue(maxsize=32)
+        self._worker: threading.Thread | None = None
         self._sr = cfg["sample_rate"]
         self._silence_frames = int(cfg["silence_ms"] / 1000 * self._sr)
         self._energy_thresh = cfg.get("energy_threshold", 0.005)
@@ -32,6 +45,7 @@ class MicCapture:
         self._frames: list = []
         self._silent_count = 0
         self._in_speech = False
+        self._buf_lock = threading.Lock()
         self._stop_evt = threading.Event()
         # PTT state
         self._ptt_active = False  # controlled by main.py
@@ -124,13 +138,33 @@ class MicCapture:
     # ── public API ────────────────────────────────────────────────────────────
     def start(self):
         self._stop_evt.clear()
+        # A FRESH queue per generation. Reusing it across stop()/start() (which is what
+        # switch_device does) let a leftover item from the previous generation reach the
+        # new worker; the worker exits on _stop_evt without draining, so anything left
+        # behind would poison the restart and silently wedge dictation for good.
+        self._work = queue.Queue(maxsize=32)
+        self._worker = threading.Thread(target=self._worker_loop, args=(self._work,),
+                                        daemon=True, name="dictation-utterance")
+        self._worker.start()
         self._thread = threading.Thread(target=self._run, daemon=True, name="dictation-capture")
         self._thread.start()
 
     def stop(self):
+        # No wake-up sentinel: _worker_loop polls with a 0.5s timeout, so it notices the
+        # stop event on its own. A sentinel would have to be consumed to be harmless, and
+        # a worker busy inside Whisper exits without consuming anything.
         self._stop_evt.set()
         if self._thread:
             self._thread.join(timeout=3)
+        if self._worker:
+            self._worker.join(timeout=2)   # > the 0.5s queue poll interval
+
+    def flush(self):
+        """Close the in-flight utterance NOW instead of waiting out `silence_ms`.
+
+        Called when the PTT key is released: the speaker has finished, so there is no
+        reason to sit through most of a second of silence before transcribing."""
+        self._emit_pending()
 
     def reload_config(self, cfg: dict):
         """Hot-reload config (gain, thresholds) without restarting the stream."""
@@ -152,7 +186,8 @@ class MicCapture:
         self._device = int(index) if index is not None else None
         if self._thread is not None and self._thread.is_alive():
             self.stop()
-        self._frames.clear(); self._in_speech = False; self._silent_count = 0
+        with self._buf_lock:
+            self._frames.clear(); self._in_speech = False; self._silent_count = 0
         self.level_rms = 0.0
         self.start()
         log.info(f"switch_device -> {self._device}")
@@ -247,23 +282,74 @@ class MicCapture:
                 log.error(f"Audio stream error: {e} — reconnecting in {backoff}s")
                 self._stop_evt.wait(backoff)
 
+    def _read_gate(self) -> bool:
+        """Sample the arm gate. If we can't tell whether we're armed, we are not."""
+        try:
+            return bool(self._gate())
+        except Exception:
+            return False
+
     def _process_block(self, block: np.ndarray):
         rms = float(np.sqrt(np.mean(block ** 2)))
-        if rms >= self._energy_thresh:
-            self._frames.append(block.copy())
-            self._in_speech = True
-            self._silent_count = 0
-        elif self._in_speech:
+        with self._buf_lock:
+            if rms >= self._energy_thresh:
+                if not self._in_speech:
+                    # Speech onset — this is the only correct moment to read the gate.
+                    self._armed_at_onset = self._read_gate()
+                    self._in_speech = True
+                elif not self._armed_at_onset and self._read_gate():
+                    # The gate came up mid-segment: the speaker cleared their throat or
+                    # a door slammed, THEN pressed PTT and spoke. Drop the unarmed
+                    # prefix and keep the phrase, instead of discarding the whole thing.
+                    self._frames.clear()
+                    self._silent_count = 0
+                    self._armed_at_onset = True
+                self._frames.append(block.copy())
+                self._silent_count = 0
+                return
+            if not self._in_speech:
+                return
             self._frames.append(block.copy())
             self._silent_count += len(block)
-            if self._silent_count >= self._silence_frames:
-                audio = np.concatenate(self._frames)
-                self._frames.clear()
+            done = self._silent_count >= self._silence_frames
+        if done:
+            self._emit_pending()
+
+    def _emit_pending(self):
+        """Hand the buffered utterance to the worker queue and reset the buffer."""
+        with self._buf_lock:
+            if not self._frames:
                 self._in_speech = False
                 self._silent_count = 0
-                t = threading.Thread(
-                    target=self._on_utterance,
-                    args=(audio, self._sr),
-                    daemon=True,
-                )
-                t.start()
+                return
+            audio = np.concatenate(self._frames)
+            armed = self._armed_at_onset
+            # How much of the buffer was actually speech. The buffer always ends with
+            # silence_ms of trailing silence, so len(audio) alone says nothing about
+            # whether the speaker said a real word — stt.py needs the speech portion to
+            # decide whether a one-word transcript is an answer or a silence artifact.
+            speech_samples = max(0, len(audio) - self._silent_count)
+            self._frames.clear()
+            self._in_speech = False
+            self._silent_count = 0
+        try:
+            self._work.put_nowait((audio, self._sr, armed, speech_samples))
+        except queue.Full:
+            logging.getLogger("dictation.capture").warning(
+                "utterance queue full — dropping %.1fs of audio", len(audio) / self._sr)
+
+    def _worker_loop(self, work: "queue.Queue"):
+        """Single consumer: keeps transcription+typing in capture order.
+
+        Takes its queue as an argument so it can only ever drain the generation it was
+        started with, even if start() has since installed a new one."""
+        log = logging.getLogger("dictation.capture")
+        while not self._stop_evt.is_set():
+            try:
+                audio, sr, armed, speech_samples = work.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self._on_utterance(audio, sr, armed, speech_samples)
+            except Exception as e:
+                log.error(f"utterance handler failed: {e}")

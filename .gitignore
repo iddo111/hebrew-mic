@@ -10,3 +10,6 @@ __pycache__/
 dictation.json
 _run.*
 .almaware/
+
+# token file — never commit the shared HTTP token
+.clod_token

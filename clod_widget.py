@@ -28,10 +28,8 @@ import scipy.signal as ss
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stt import WhisperSTT          # faster-whisper wrapper (he/en, hallucination filter)
-import typer as typer_mod           # SendInput Unicode typing + Enter
-import audio_clean                   # auto-gain + auto-volume + denoise (better Hebrew)
-import haiku_correct                  # HaikuBrainz — smart autocorrect (per-utterance)
-import corrections                    # teachable {wrong:right} map — learns Iddo's words
+import keytyper as typer_mod       # SendInput Unicode typing + Enter
+import postprocess                   # shared polish stage: audio_clean + Haiku + corrections
 from mic_guard import pick_mic, query_devices_live, DEFAULT_PREFER_NAMES
 
 TARGET_SR = 16000
@@ -567,8 +565,8 @@ class ClodWidget:
         if not self._model_ready or self._stt is None:
             return
         try:
-            if getattr(self, "_audio_clean", True):
-                audio16k = audio_clean.clean(audio16k, sr)   # AGC + denoise -> better Hebrew
+            audio16k = postprocess.clean_audio(
+                audio16k, sr, enabled=getattr(self, "_audio_clean", True))  # AGC + denoise
             text, _ = self._stt.transcribe(audio16k, sr)
         except Exception as e:
             self.root.after(0, lambda: self._set_status(f"שגיאת STT: {e}", RED)); return
@@ -579,16 +577,17 @@ class ClodWidget:
         # HaikuBrainz — smart autocorrect per utterance (Iddo's choice: smartest, ~10s).
         # ONLY when armed/always (Iddo: "בהתחלה עד שמתחמש אל תפעיל מוח הייקו") — never
         # waste 10s polishing a wake-word-detection utterance.
-        if getattr(self, "_haiku_brainz", False) and (self._dictating or self._mode == "always"):
+        use_haiku = (getattr(self, "_haiku_brainz", False)
+                     and (self._dictating or self._mode == "always"))
+        if use_haiku:
             self.root.after(0, lambda: self._set_status("🧠 מלטש (HaikuBrainz)…", AMBER))
-            fixed = haiku_correct.correct(text, getattr(self, "_hb_context", ""))
-            if fixed:
-                text = fixed
-            self._hb_context = ((getattr(self, "_hb_context", "") + " " + text)[-400:])
+        # Same polish stage main.py uses: Haiku (opt-in) then the teachable map.
+        text = postprocess.fix_text(text, getattr(self, "_hb_context", ""), haiku=use_haiku)
+        if use_haiku:
+            self._hb_context = postprocess.push_context(getattr(self, "_hb_context", ""), text)
             _dbg(f"[haiku] -> {text!r}")
-
-        # teachable corrections — deterministic overrides win (learns Iddo's words)
-        text = corrections.fix(text)
+        if not text:
+            return
 
         if self._mode == "always":
             self._do_type(text); return
