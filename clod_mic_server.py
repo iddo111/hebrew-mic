@@ -1,9 +1,19 @@
 # clod_mic_server.py — Clod Mic PWA server + /dispatch + /transcribe + /type endpoints
-# Binds on 0.0.0.0:7789, reachable from A70 over local network / Tailscale
+#
+# SECURITY: every endpoint here can type into the PC and press Enter, so all of them
+# require the shared token (see authtoken.py). The bind address defaults to loopback —
+# set CLOD_MIC_HOST to your Tailscale address (preferred) or 0.0.0.0 to let the phone
+# reach it. There is no wildcard CORS: the page is served from this same origin, and a
+# cross-origin caller has no business driving the keyboard.
+#
+#   CLOD_MIC_HOST=100.x.y.z python clod_mic_server.py
+#
 # לזכרה של עלמה ז״ל
 
-import os, subprocess, logging, threading, tempfile, numpy as np
+import functools, os, subprocess, logging, threading, tempfile, numpy as np
 from flask import Flask, request, jsonify, Response
+
+import authtoken
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,20 +31,34 @@ _HTML = os.path.join(_HERE, "android_mic.html")
 _typer_mod = None
 
 
+def _require_token(fn):
+    """Every route that can reach the keyboard goes through this."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        if not authtoken.check(authtoken.extract(request.headers, request.args)):
+            log.warning("rejected %s %s from %s — bad or missing token",
+                        request.method, request.path, request.remote_addr)
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return fn(*a, **kw)
+    return wrapper
+
+
 def _load_typer():
-    """Load the local typer.py (works as package OR standalone)."""
+    """Load the local keytyper module (works as package OR standalone)."""
     global _typer_mod
     if _typer_mod is not None:
         return _typer_mod
     try:
-        from . import typer as t  # package import
+        from . import keytyper as t  # package import
         _typer_mod = t
     except Exception:
         import importlib.util, pathlib, sys
-        p = pathlib.Path(__file__).parent / "typer.py"
-        spec = importlib.util.spec_from_file_location("typer", p)
+        p = pathlib.Path(__file__).parent / "keytyper.py"
+        spec = importlib.util.spec_from_file_location("keytyper", p)
         t = importlib.util.module_from_spec(spec)
-        sys.modules["typer"] = t
+        # Register under its own name only — never claim the `typer` module slot,
+        # which belongs to the unrelated CLI package on PyPI.
+        sys.modules["keytyper"] = t
         spec.loader.exec_module(t)
         _typer_mod = t
     return _typer_mod
@@ -54,11 +78,19 @@ def _type_and_submit(text: str) -> str:
 @app.route("/", methods=["GET"])
 @app.route("/android_mic.html", methods=["GET"])
 def serve_pwa():
+    """Serve the phone page. When the URL carries a valid ?token=…, the token is
+    baked into the page so the phone doesn't have to be typed at again; otherwise
+    the page loads and asks for it."""
     with open(_HTML, encoding="utf-8") as f:
-        return Response(f.read(), mimetype="text/html")
+        html = f.read()
+    presented = authtoken.extract(request.headers, request.args)
+    baked = authtoken.get_token() if authtoken.check(presented) else ""
+    html = html.replace("__CLOD_TOKEN__", baked)
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/dispatch", methods=["POST"])
+@_require_token
 def dispatch():
     """Receive text from Clod Mic PWA on phone → pipe to claude CLI."""
     data = request.get_json(force=True, silent=True) or {}
@@ -75,6 +107,7 @@ def dispatch():
 
 
 @app.route("/transcribe", methods=["POST"])
+@_require_token
 def transcribe():
     """Accept multipart audio file from A70 widget → run Whisper → return {text}."""
     if "audio" not in request.files:
@@ -153,6 +186,7 @@ _whisper_model = None
 
 
 @app.route("/type", methods=["POST"])
+@_require_token
 def type_text_endpoint():
     """Accept {text} → inject as Unicode keystrokes into the focused Windows window."""
     data = request.get_json(force=True, silent=True) or {}
@@ -161,16 +195,7 @@ def type_text_endpoint():
         return jsonify({"ok": False, "error": "empty text"}), 400
     log.info(f"[type] '{text}'")
     try:
-        from .typer import type_text
-        type_text(text)
-    except ImportError:
-        # Running as standalone (not a package) — import directly
-        import sys, importlib.util, pathlib
-        typer_path = pathlib.Path(__file__).parent / "typer.py"
-        spec = importlib.util.spec_from_file_location("typer", typer_path)
-        typer_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(typer_mod)
-        typer_mod.type_text(text)
+        _load_typer().type_text(text)
     except Exception as e:
         log.error(f"[type] error: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -183,12 +208,28 @@ def health():
 
 
 @app.after_request
-def cors(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+def security_headers(resp):
+    """No wildcard CORS. The phone page is same-origin with this server, so it needs
+    no CORS at all; set CLOD_MIC_ORIGIN only if you deliberately serve the page from
+    somewhere else (e.g. a Tailscale Serve HTTPS front-end)."""
+    origin = os.environ.get("CLOD_MIC_ORIGIN", "").strip()
+    if origin and request.headers.get("Origin") == origin:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Clod-Token"
+        resp.headers["Vary"] = "Origin"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 
 if __name__ == "__main__":
-    log.info("=== Clod Mic server starting on 0.0.0.0:7789 ===")
-    app.run(host="0.0.0.0", port=7789, debug=False, use_reloader=False)
+    # Loopback by default: opening the keyboard to the whole LAN has to be a
+    # deliberate act, not what happens when you double-click the launcher.
+    host = os.environ.get("CLOD_MIC_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.environ.get("CLOD_MIC_PORT", "7789"))
+    token = authtoken.get_token()
+    log.info(f"=== Clod Mic server starting on {host}:{port} ===")
+    if host in ("0.0.0.0", "::"):
+        log.warning("bound to ALL interfaces — every device on this network can reach it. "
+                    "Prefer CLOD_MIC_HOST=<your-tailscale-ip>.")
+    log.info(f"Open on the phone:  http://{host}:{port}/?token={token}")
+    app.run(host=host, port=port, debug=False, use_reloader=False)

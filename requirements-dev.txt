@@ -1,0 +1,6 @@
+# Test-only dependencies. The suite covers the pure logic — routing, the Hebrew
+# hallucination filter, the mic firewall, the PTT gate, corrections, the auth token —
+# so it needs neither a GPU, a microphone, nor Windows.
+pytest>=8.0
+numpy>=1.24
+scipy>=1.10

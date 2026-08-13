@@ -14,7 +14,6 @@ DEFAULTS = {
     "mic_blocklist": [            # device name substrings that are FORBIDDEN
         "WH-1000XM4", "Headset", "Hands-Free", "Loopback", "Virtual", "AudioRelay",
     ],
-    "wasapi_shared": True,
     "whisper_model": "medium",
     "whisper_device": "cuda",
     "silence_ms": 900,
@@ -30,7 +29,22 @@ DEFAULTS = {
     "no_speech_threshold": 0.65,  # Tighter — reject more silence hallucinations
     "sample_rate": 16000,
     "http_port": 7788,
+    "enter_delay": 0.07,          # pause between the last character and the Enter
+    # Routing: "smart" = a leading "קלוד"/"גרוק" focuses that window first;
+    # "focused" = never steal focus, always type into the foreground window.
+    "default_route": "smart",
+    # Window-title substrings. Enter is pressed ONLY when the foreground title matches
+    # submit_title_patterns, and never when it matches auto_enter_blocklist.
+    "submit_title_patterns": ["claude"],
     "auto_enter_blocklist": [],
+    # Refuse to TYPE at all when the foreground title matches — password prompts,
+    # banking, a lock screen. The Enter gate alone does not protect these.
+    "type_blocklist": [],
+    # Shared text/audio polish stage (postprocess.py), off by default:
+    # audio_clean costs a little latency, haiku_brainz needs the Claude CLI.
+    "audio_clean": False,
+    "haiku_brainz": False,
+    "haiku_timeout": 12.0,
 }
 
 def load() -> dict:

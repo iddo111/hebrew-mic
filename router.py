@@ -1,16 +1,12 @@
-"""router.py - voice-controlled dictation TARGET routing for the Hebrew mic.
+"""router.py — resolve a logical dictation target to a real window, and focus it.
 
-Two jobs:
+Given a logical target ("claude" / "grok") this finds the matching top-level window
+by title substring or process name and brings it to the foreground, so dictation is
+typed ONLY into that window instead of leaking into whatever happened to be focused.
 
-1) Parse the wake-phrase "שירי" (Shiri) + a routing command out of a transcript,
-   e.g.  "שירי עכשיו הקלדה בקלוד"  ->  switch target to the Claude Code window.
-   The routing command itself is CONSUMED (never typed as text).
-
-2) Resolve a logical target ("claude" / "eran" / "whatsapp" / "notepad") to a real
-   top-level window (by title / process name) and focus it, so dictation is typed
-   ONLY into that window — never leaked into whatever happens to be focused.
-
-Targets are matched by window-title substrings + process names (config-driven).
+Wake-word parsing lives in routing.py (pure, testable, cross-platform); this module
+is the Windows side-effect half. Windows-only: it is imported defensively by main.py,
+which falls back to typing into the focused window when it can't be loaded.
 
 לזכרה של עלמה ז"ל - iddoperez.ai
 """
@@ -18,7 +14,6 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import re
 from ctypes import wintypes
 
 logger = logging.getLogger("voiceinput.router")
@@ -27,93 +22,20 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 # ── target definitions ───────────────────────────────────────────────────────
-# logical name -> {title substrings, process exe substrings, Hebrew+EN aliases}
+# logical name -> {title substrings, process exe substrings}
+# main.py passes its own table; this is the fallback for direct callers.
 DEFAULT_TARGETS = {
     "claude": {
         "titles": ["claude", "claude code", "windows powershell", "powershell",
                    "cmd", "windows terminal"],
         "procs": ["windowsterminal.exe", "powershell.exe", "pwsh.exe",
                   "cmd.exe", "claude.exe", "conhost.exe"],
-        "aliases": ["קלוד", "claude", "קולד", "כלוד", "קלוו"],
     },
-    "eran": {
-        "titles": ["eran", "ערן", "eran console"],
-        "procs": ["python.exe", "eran.exe"],
-        "aliases": ["ערן", "eran", "עירן"],
-    },
-    "whatsapp": {
-        "titles": ["whatsapp", "וואטסאפ"],
-        "procs": ["whatsapp.exe"],
-        "aliases": ["וואטסאפ", "ווצאפ", "whatsapp", "ואטסאפ", "וטסאפ"],
-    },
-    "notepad": {
-        "titles": ["notepad", "פנקס רשימות", "- notepad"],
-        "procs": ["notepad.exe", "notepad++.exe"],
-        "aliases": ["נוטפד", "notepad", "פנקס", "פנקס רשימות"],
+    "grok": {
+        "titles": ["grok"],
+        "procs": ["grok.exe"],
     },
 }
-
-# Hebrew wake-word variants Whisper may produce for "שירי"
-_WAKE = ["שירי", "שירה", "שיר י", "שירית", "שירל", "siri", "shiri", "שרי"]
-# routing verb cues that precede the target ("הקלדה ב...", "תקלידי ל...", "מצב ...")
-_ROUTE_CUE = re.compile(
-    r"(?:עכשיו\s+)?(?:הקלד[הי]?|תקליד[יה]?|כתב[הי]?|תכתב[יה]?|מצב|עבר[יה]?\s+ל|"
-    r"דבר[יה]?\s+ל|type|target|switch\s+to|go\s+to)",
-    re.I)
-
-
-# ── wake + route parsing ──────────────────────────────────────────────────────
-def _norm(s: str) -> str:
-    # strip nikud + collapse whitespace + drop trailing punctuation
-    s = re.sub(r"[֑-ׇ]", "", s or "")
-    return re.sub(r"\s+", " ", s).strip(" .,!?־-")
-
-
-def parse_command(text: str, targets: dict | None = None):
-    """If `text` begins with the wake-phrase 'שירי' AND names a known target,
-    return (logical_target, leftover_text). leftover_text is anything the user
-    said AFTER the routing command (usually '' — to be discarded, not typed).
-
-    Returns (None, text) when this is NOT a routing command (normal dictation)."""
-    targets = targets or DEFAULT_TARGETS
-    t = _norm(text)
-    low = t.lower()
-
-    # must start with a wake variant within the first few words
-    head = " ".join(low.split()[:2])
-    if not any(w in head for w in _WAKE):
-        return None, text
-
-    # find which target alias appears
-    chosen = None
-    pos = -1
-    for name, spec in targets.items():
-        for alias in spec.get("aliases", []):
-            a = _norm(alias).lower()
-            # allow a glued Hebrew preposition prefix (ב/ל/ו/מ/ה) e.g. "בקלוד",
-            # "לוואטסאפ" — Whisper writes these as one token with no boundary.
-            m = re.search(r"(?:^|\s|[בלומה])" + re.escape(a) + r"(?:\W|$)", low)
-            if m:
-                # prefer the LAST cue+alias so "שירי עכשיו הקלדה בקלוד" wins
-                if m.start() > pos:
-                    chosen, pos = name, m.start()
-    if not chosen:
-        # wake word but no recognised target -> treat as command (consume),
-        # don't type "שירי ..." as text
-        logger.info("wake heard but no known target in: %r", t)
-        return "__no_target__", ""
-
-    # leftover after the alias = anything still meant as dictation (rare)
-    after = t[pos + 1:]
-    # drop the alias word itself + a leading 'ב'/'ל' preposition
-    after = re.sub(r"^\W*", "", after)
-    leftover = ""  # default: routing command line carries no dictation payload
-    return chosen, leftover
-
-
-def is_route_only(text: str, targets: dict | None = None) -> bool:
-    tgt, _ = parse_command(text, targets)
-    return tgt is not None
 
 
 # ── window discovery + focus ──────────────────────────────────────────────────
@@ -212,17 +134,7 @@ def focus_target(target: str, targets: dict | None = None):
 if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8")
-    tests = [
-        "שירי עכשיו הקלדה בקלוד",
-        "שירי עכשיו הקלדה בערן",
-        "שירי תקלידי בוואטסאפ",
-        "שלום עידו מה שלומך",
-        "שירי מצב נוטפד",
-    ]
-    for t in tests:
-        tgt, leftover = parse_command(t)
-        print(f"{t!r:45} -> target={tgt!r} leftover={leftover!r}")
-    print("\n--- live windows for known targets ---")
+    print("--- live windows for known targets ---")
     for name in DEFAULT_TARGETS:
         f = find_window(name)
         print(f"  {name:10} -> {f[1] if f else '(none)'}")

@@ -273,6 +273,28 @@ function getServer() {
   return (document.getElementById("serverIp").value.trim() || DEFAULT_SERVER).replace(/\/$/, "");
 }
 
+// ── Access token ──────────────────────────────────────────────────────────────
+// Every endpoint that types into the PC requires the shared token. The server bakes
+// it into this page when you open the URL it prints at startup
+// (http://<pc>:7789/?token=…); after that it lives in localStorage. Priority:
+// baked-in > ?token= in the URL > saved.
+const BAKED_TOKEN = "__CLOD_TOKEN__".indexOf("CLOD_TOKEN") >= 0 ? "" : "__CLOD_TOKEN__";
+const URL_TOKEN = new URLSearchParams(location.search).get("token") || "";
+if (BAKED_TOKEN || URL_TOKEN) {
+  localStorage.setItem("clodMicToken", BAKED_TOKEN || URL_TOKEN);
+}
+
+function getToken() {
+  return localStorage.getItem("clodMicToken") || "";
+}
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  const t = getToken();
+  if (t) h["X-Clod-Token"] = t;
+  return h;
+}
+
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setUI(state, statusText, cls) {
   document.getElementById("micBtn").className = state;
@@ -462,9 +484,15 @@ async function handleFinal(text) {
     try {
       const resp = await fetch(server + "/dispatch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ text: payload }),
       });
+      if (resp.status === 401) {
+        showFeedback("🔑 חסר קוד גישה — פתח את הכתובת עם ?token=… שהשרת הדפיס", "err");
+        setUI("listening", "🔴 מאזין... (אין הרשאה)", "listening");
+        setTranscript("");
+        return;
+      }
       const json = await resp.json();
       if (json.ok) {
         showFeedback("✅ נשלח לקלוד: " + payload, "sent");
