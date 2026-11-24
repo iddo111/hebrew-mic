@@ -259,6 +259,8 @@ const TRIGGER_EN = /^claude[,\s]*/i;
 
 let recognition = null;
 let isListening = false;
+let listenGeneration = 0;
+let restartTimer = null;
 let currentLang = "he-IL";
 let audioCtx = null, analyser = null, micStream = null, animFrame = null;
 
@@ -374,50 +376,81 @@ function buildRecognition() {
   r.interimResults = true;
   r.lang = currentLang;
   r.maxAlternatives = 1;
+  const deliveredFinals = new Set();
+  let restartDelay = 300;
 
   r.onstart = () => {
+    if (!isListening || recognition !== r) return;
+    deliveredFinals.clear();
+    restartDelay = 300;
     setUI("listening", "🔴 מאזין... • Listening...", "listening");
   };
 
   r.onresult = (e) => {
+    if (!isListening || recognition !== r) return;
     let interim = "", final_ = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final_ += t; else interim += t;
+      if (e.results[i].isFinal) {
+        // A final result index belongs to this recognition session. Ignore a
+        // replayed event, without suppressing a person repeating a new utterance.
+        if (!deliveredFinals.has(i)) {
+          deliveredFinals.add(i);
+          final_ += t;
+        }
+      } else interim += t;
     }
-    setTranscript(final_ || interim);
+    if (final_ || interim) setTranscript(final_ || interim);
     if (final_) handleFinal(final_.trim());
   };
 
   r.onerror = (e) => {
+    if (!isListening || recognition !== r) return;
     const msg = e.error === "not-allowed"
       ? "❌ מיקרופון חסום • Mic blocked"
       : "❌ שגיאה: " + e.error;
-    setUI("idle", msg, "error");
     showFeedback(msg, "err");
-    isListening = false;
-    stopVisualizer();
-    if (e.error !== "not-allowed" && e.error !== "aborted") restartAfterDelay(800);
+    if (e.error === "no-speech" || e.error === "network") {
+      // Keep the user's listening intent. Only onend schedules the restart, so
+      // error + end cannot create two competing starts.
+      restartDelay = 800;
+      setUI("listening", "⏳ מתחבר מחדש... • Reconnecting...", "listening");
+    } else {
+      stopListening();
+      setUI("idle", msg, "error");
+    }
   };
 
   r.onend = () => {
-    if (isListening) {
-      setTimeout(() => { if (isListening && recognition) { try { recognition.start(); } catch(x){} } }, 300);
-    } else {
-      setUI("idle", "לחץ להאזנה • Tap to listen", "idle");
-      stopVisualizer();
-    }
+    if (isListening && recognition === r) restartAfterDelay(restartDelay, r);
   };
 
   return r;
 }
 
-function restartAfterDelay(ms) {
-  setTimeout(() => {
-    if (isListening && recognition) {
-      try { recognition.start(); } catch(x) {}
+function restartAfterDelay(ms, r) {
+  clearTimeout(restartTimer);
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    if (isListening && recognition === r) {
+      try { r.start(); } catch(e) {
+        stopListening();
+        setUI("idle", "❌ " + e.message, "error");
+      }
     }
   }, ms);
+}
+
+function stopListening() {
+  isListening = false;
+  listenGeneration++;
+  clearTimeout(restartTimer);
+  restartTimer = null;
+  const old = recognition;
+  recognition = null;
+  if (old) { try { old.abort(); } catch(e) {} }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  stopVisualizer();
 }
 
 // ── Main toggle ───────────────────────────────────────────────────────────────
@@ -429,10 +462,7 @@ async function toggleListen() {
 
   if (isListening) {
     // Stop
-    isListening = false;
-    if (recognition) { try { recognition.stop(); } catch(x) {} }
-    if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-    stopVisualizer();
+    stopListening();
     setUI("idle", "לחץ להאזנה • Tap to listen", "idle");
     setTranscript("");
     return;
@@ -440,15 +470,22 @@ async function toggleListen() {
 
   // Start — request mic permission + start visualizer
   isListening = true;
+  const generation = ++listenGeneration;
   setUI("listening", "⏳ מבקש מיקרופון...", "listening");
 
   try {
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (!isListening || generation !== listenGeneration) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+    micStream = stream;
     startVisualizer(micStream);
   } catch(e) {
+    if (generation !== listenGeneration) return;
+    stopListening();
     setUI("idle", "❌ אין גישה למיקרופון", "error");
     showFeedback("Mic permission denied", "err");
-    isListening = false;
     return;
   }
 
@@ -457,14 +494,16 @@ async function toggleListen() {
   try {
     recognition.start();
   } catch(e) {
+    stopListening();
     setUI("idle", "❌ " + e.message, "error");
-    isListening = false;
   }
 }
 
 // ── Handle final transcript ───────────────────────────────────────────────────
 async function handleFinal(text) {
-  if (!text) return;
+  if (!text || !isListening) return;
+  const generation = listenGeneration;
+  const stillListening = () => isListening && generation === listenGeneration;
 
   const isClaudeTriggerHe = TRIGGER_HE.test(text);
   const isClaudeTriggerEn = TRIGGER_EN.test(text);
@@ -487,6 +526,7 @@ async function handleFinal(text) {
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ text: payload }),
       });
+      if (!stillListening()) return;
       if (resp.status === 401) {
         showFeedback("🔑 חסר קוד גישה — פתח את הכתובת עם ?token=… שהשרת הדפיס", "err");
         setUI("listening", "🔴 מאזין... (אין הרשאה)", "listening");
@@ -494,6 +534,7 @@ async function handleFinal(text) {
         return;
       }
       const json = await resp.json();
+      if (!stillListening()) return;
       if (json.ok) {
         showFeedback("✅ נשלח לקלוד: " + payload, "sent");
         setUI("listening", "🔴 מאזין... • Listening...", "listening");
@@ -501,6 +542,7 @@ async function handleFinal(text) {
         throw new Error(json.error || "unknown");
       }
     } catch(e) {
+      if (!stillListening()) return;
       showFeedback("❌ שגיאת שליחה: " + e.message, "err");
       setUI("listening", "🔴 מאזין... (שגיאה)", "listening");
     }
@@ -512,8 +554,10 @@ async function handleFinal(text) {
     // but we can copy it to clipboard so user can paste
     try {
       await navigator.clipboard.writeText(text);
+      if (!stillListening()) return;
       showFeedback("📋 הועתק: " + text, "typed");
     } catch(e) {
+      if (!stillListening()) return;
       showFeedback("⌨️ " + text, "typed");
     }
   }
