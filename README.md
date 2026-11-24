@@ -123,6 +123,7 @@ require a shared token:
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest tests/ -q
+node --test tests/test_android_mic.mjs  # Node 22+; no browser or microphone needed
 ```
 
 No GPU, microphone or Windows needed — the suite covers the pure logic (routing, the

@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  android-recognition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test Android recognition lifecycle without hardware
+        run: node --test tests/test_android_mic.mjs
+
   pytest:
     runs-on: ubuntu-latest
     strategy:
